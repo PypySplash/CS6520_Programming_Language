@@ -1,0 +1,404 @@
+#lang shplait
+
+type Value
+| boolV(b :: Boolean)
+| intV(n :: Int)
+| closV(arg :: Symbol, // A closure conbines an expression with an environment
+        body :: Exp,
+        env :: Env)
+| thunkV(body :: Exp, env :: Env)  // 將 thunkV 作為 Value 的一種
+
+type Exp
+| intE(n :: Int)
+| idE(s :: Symbol)
+| plusE(l :: Exp,
+        r :: Exp)
+| multE(l :: Exp,
+        r :: Exp)
+| letE(n :: Symbol,
+       rhs :: Exp,
+       body :: Exp)
+| funE(n :: Symbol,
+       body :: Exp)
+| appE(fn :: Exp,
+       arg :: Exp)
+| trueE()
+| falseE()
+| eqE(l :: Exp, r :: Exp)
+| ifE(condE :: Exp, thenE :: Exp, elseE :: Exp)
+| renameE(old :: Symbol,
+          new :: Symbol,
+          body :: Exp)
+
+| delayE(body :: Exp)
+| forceE(thunk :: Exp)
+  
+type Binding
+| bind(name :: Symbol,
+       val :: Value)
+
+type Env = Listof(Binding)
+
+def mt_env = []
+def extend_env = cons
+
+// parse ----------------------------------------
+fun parse(s :: Syntax) :: Exp:
+  cond
+  | syntax_is_integer(s):
+      intE(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      idE(syntax_to_symbol(s))
+  | s == '#true':  // trueE
+      trueE()
+  | s == '#false':  // falseE
+      falseE()
+  | ~else:
+      match s
+      | 'delay: $body':
+          delayE(parse(body))
+      | 'force($thunk_exp)':
+          forceE(parse(thunk_exp))
+      | 'if $condE | $thenE | $elseE':  // ifE
+          ifE(parse(condE), parse(thenE), parse(elseE))
+      | '$left == $right':  // eqE
+          eqE(parse(left), parse(right))
+      | 'let $name = $rhs:
+           $body':
+          letE(syntax_to_symbol(name),
+               parse(rhs),
+               parse(body))
+      | '$left + $right':
+          plusE(parse(left),
+                parse(right))
+      | '$left * $right':
+          multE(parse(left),
+                parse(right))
+      | 'fun ($id): $body':
+          funE(syntax_to_symbol(id),
+               parse(body))
+      | '$fn($arg)':
+          appE(parse(fn),
+               parse(arg))
+      | '($e)':
+          parse(e)
+      | 'rename $old to $new: $body':
+          renameE(syntax_to_symbol(old),
+                  syntax_to_symbol(new),
+                  parse(body))
+
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+
+//check: parse('let x = 1: rename x to y: y')
+//       ~is parse('1')
+
+
+module test:
+  check: parse('2')
+         ~is intE(2)
+  check: parse('x')
+         ~is idE(#'x)
+  check: parse('2 + 1')
+         ~is plusE(intE(2), intE (1))
+  check: parse('3 * 4')
+         ~is multE(intE(3), intE(4))
+  check: parse('3 * 4 + 8')
+         ~is plusE(multE(intE(3), intE(4)),
+                   intE(8))
+  check: parse('fun (x): 9')
+         ~is funE(#'x, intE(9))
+  check: parse('double(9)')
+         ~is appE(idE(#'double), intE(9))
+  check: parse('1 + double(9)')
+         ~is plusE(intE(1),
+                   appE(idE(#'double), intE(9)))
+  check: parse('3 * (4 + 8)')
+         ~is multE(intE(3),
+                   plusE(intE(4), intE(8)))
+  check: parse('let x = 1 + 2:
+                  y')
+         ~is letE(#'x,
+                  plusE(intE(1), intE(2)),
+                  idE(#'y))
+  check: parse('1 2')
+         ~raises "invalid input"
+
+fun replace_binding(what :: Symbol, for :: Symbol, env :: Env) :: Env:
+  match env
+  | []: []  // 空環境,直接返回
+  | cons(b, rst_env):
+      if what == bind.name(b):
+      | cons(bind(for, bind.val(b)), rst_env)  // 用 for 替換 what
+      | cons(b, replace_binding(what, for, rst_env))  // 繼續查找
+
+
+
+// interp ----------------------------------------
+fun interp(a :: Exp, env :: Env) :: Value:
+  match a
+  | trueE(): boolV(#true)
+  | falseE(): boolV(#false)
+  | intE(n): intV(n)
+  | idE(s): lookup(s, env)
+  | plusE(l, r): num_plus(interp(l, env), interp(r, env))
+  | multE(l, r): num_mult(interp(l, env), interp(r, env))
+  | letE(n, rhs, body):
+      def rhs_v = interp(rhs, env)
+      interp(body,
+             extend_env(bind(n, rhs_v),
+                        env))
+  | funE(n, body): closV(n, body, env)
+  | appE(fn, arg):
+      match interp(fn, env)
+      | closV(n, body, c_env):
+          interp(body,
+                 extend_env(bind(n, interp(arg, env)),
+                            c_env))
+      | ~else: error(#'interp, "not a function")
+
+  | eqE(l, r):  // eqE
+      def left_val = interp(l, env)
+      def right_val = interp(r, env)
+    
+      match left_val
+      | intV(n1):
+          match right_val
+          | intV(n2):
+              if n1 == n2:
+              | boolV(#true)
+              | boolV(#false)
+          | ~else:
+              error(#'interp, "not a number")
+      | ~else:
+          error(#'interp, "not a number")
+          
+  | ifE(condE, thenE, elseE):  // ifE
+      def cond_val = interp(condE, env)
+    
+      match cond_val
+      | boolV(b):
+          if b == #true:
+          | interp(thenE, env)
+          | interp(elseE, env)
+      | ~else:
+          error(#'interp, "not a boolean")
+               
+  | renameE(old, new, body):
+      def old_val = lookup(old, env)  // 嘗試查找舊變量的值,如果 `old` 不存在,將引發 "free variable" 錯誤
+      def new_env = replace_binding(old, new, env)  // 使用 replace_binding 來替換變量
+      interp(body, new_env)  // 解釋 body,保持原本的 x 綁定
+      
+  | delayE(body):
+      thunkV(body, env)
+
+  | forceE(thunk_exp):
+      match interp(thunk_exp, env)
+      | thunkV(body, thunk_env):
+          interp(body, thunk_env)
+      | ~else:
+          error(#'forceE, "not a thunk")
+
+
+
+
+module test:
+  check: interp(parse('2'), mt_env)
+         ~is intV(2)
+  check: interp(parse('x'), mt_env)
+         ~raises "free variable"
+  check: interp(parse('x'),
+                extend_env(bind(#'x, intV(9)), mt_env))
+         ~is intV(9)
+  check: interp(parse('2 + 1'), mt_env)
+         ~is intV(3)
+  check: interp(parse('2 * 1'), mt_env)
+         ~is intV(2)
+  check: interp(parse('(2 * 3) + (5 + 8)'), mt_env)
+         ~is intV(19)
+  check: interp(parse('fun (x): x + x'),
+                mt_env)
+         ~is closV(#'x, plusE(idE(#'x), idE(#'x)), mt_env)
+  check: interp(parse('let x = 5: x + x'),
+                mt_env)
+         ~is intV(10)
+  check: interp(parse('let x = 5:
+                         let x = x + 1:
+                           x + x'),
+                mt_env)
+         ~is intV(12)
+  check: interp(parse('let x = 5:
+                         let y = 6:
+                           x'),
+                mt_env)
+         ~is intV(5)
+  check: interp(parse('(fun (x): x + x)(8)'),
+                mt_env)
+         ~is intV(16)
+  check: interp(parse('1(2)'), mt_env)
+         ~raises "not a function"
+  check: interp(parse('1 + (fun (x): x)'), mt_env)
+         ~raises "not a number"
+  check: interp(parse('let bad = (fun (x): x + y):
+                         let y = 5:
+                           bad(2)'),
+                mt_env)
+         ~raises "free variable"
+
+  check: interp(parse('force(1)'),
+                mt_env)
+         ~raises "not a thunk"
+  check: interp(parse('force(if 8 == 8 | (delay: 7) | (delay: 9))'),
+                mt_env)
+         ~is interp(parse('7'),
+                    mt_env)
+  check: interp(parse('let d = (let y = 8:
+                                  delay: y + 7):
+                         let y = 9:
+                           force(d)'),
+                mt_env)
+         ~is interp(parse('15'),
+                    mt_env)
+
+  #//
+  time:
+    interp(parse('let x2 = (fun (n): n + n):
+                    let x4 = (fun (n): x2(x2(n))):
+                      let x16 = (fun (n): x4(x4(n))):
+                        let x256 = (fun (n): x16(x16(n))):
+                          let x65536 = (fun (n): x256(x256(n))):
+                            x65536(1)'),
+           mt_env)    
+               
+// num_plus and num_mult ----------------------------------------
+fun num_op(op :: (Int, Int) -> Int, l :: Value, r :: Value) :: Value:
+  cond
+  | l is_a intV && r is_a intV:
+      intV(op(intV.n(l), intV.n(r)))
+  | ~else:
+      error(#'interp, "not a number")
+fun num_plus(l :: Value, r :: Value) :: Value:
+  num_op(fun (a, b): a+b, l, r)
+fun num_mult(l :: Value, r :: Value) :: Value:
+  num_op(fun (a, b): a*b, l, r)
+
+module test:
+  check: num_plus(intV(1), intV(2))
+         ~is intV(3)
+  check: num_mult(intV(3), intV(2))
+         ~is intV(6)
+  
+// lookup ----------------------------------------
+fun lookup(n :: Symbol, env :: Env) :: Value:
+  match env
+  | []: error(#'lookup, "free variable")
+  | cons(b, rst_env):
+      cond
+      | n == bind.name(b):
+          bind.val(b)
+      | ~else:
+          lookup(n, rst_env)
+
+module test:
+  check: lookup(#'x, mt_env)
+         ~raises "free variable"
+  check: lookup(#'x, extend_env(bind(#'x, intV(8)), mt_env))
+         ~is intV(8)
+  check: lookup(#'x, extend_env(bind(#'x, intV(9)),
+                                extend_env(bind(#'x, intV(8)),
+                                           mt_env)))
+         ~is intV(9)
+  check: lookup(#'y, extend_env(bind(#'x, intV(9)),
+                                extend_env(bind(#'y, intV(8)),
+                                           mt_env)))
+         ~is intV(8)
+
+
+  check: interp(parse('1 + 2 == 3'), mt_env)
+         ~is interp(parse('#true'), mt_env)
+  check: interp(parse('1 + 2 == 4'), mt_env)
+         ~is interp(parse('#false'), mt_env)
+  check: interp(parse('if 2 == 1 + 1 | 7 | 8'), mt_env)
+         ~is interp(parse('7'), mt_env)
+  check: interp(parse('if 3 == 1 + 1 | 7 | 8'), mt_env)
+         ~is interp(parse('8'), mt_env)
+  check: interp(parse('#true == 1'), mt_env)
+         ~raises "not a number"
+  check: interp(parse('1 == #false'), mt_env)
+         ~raises "not a number"
+  check: interp(parse('if #false | 1 + (fun (x): x) | 9'), mt_env)
+         ~is interp(parse('9'), mt_env)
+  check: interp(parse('if #true | 10 | 1 + (fun (x): x)'), mt_env)
+         ~is interp(parse('10'), mt_env)
+  check: interp(parse('if 1 | 2 | 3'), mt_env)
+         ~raises "not a boolean"
+
+  check: interp(parse('let x = 1:
+                         rename x to y:
+                           y'),
+                mt_env)
+         ~is interp(parse('1'), mt_env)
+  check: interp(parse('let x = 1:
+                         rename y to x:
+                           x'),
+                mt_env)
+         ~raises "free variable"
+  check: interp(parse('let x = 1:
+                         rename x to y:
+                           x'),
+                mt_env)
+         ~raises "free variable"
+  check: interp(parse('let x = 1:
+                         x + (rename x to y:
+                                1)'),
+                mt_env)
+         ~is interp(parse('2'), mt_env)
+  check: interp(parse('let x = 1:
+                         x + (rename x to y:
+                                y)'),
+                mt_env)
+         ~is interp(parse('2'), mt_env)
+  check: interp(parse('let x = 1:
+                         (rename x to y:
+                           y) + x'),
+                mt_env)
+         ~is interp(parse('2'), mt_env)
+  check: interp(parse('let x = 2:
+                         let x = 1:
+                            x + (rename x to y:
+                                   x)'),
+                mt_env)
+         ~is interp(parse('3'), mt_env)
+  check: interp(parse('let x = 1:
+                         let x = 2:
+                           let z = 3:
+                              x + (rename x to y:
+                                     x + z)'),
+                mt_env)
+         ~is interp(parse('6'), mt_env)
+  check: interp(parse('let f = (fun (z):
+                                  let z = 8:
+                                    rename z to x:
+                                      z):
+                         f(2)'),
+                mt_env)
+         ~is interp(parse('2'), mt_env)
+
+  check: interp(parse('let x = (1): let x = (3): let y = (5): rename x to y: y + x'), mt_env)
+         ~is intV(6)
+
+
+  check: replace_binding(#'x, #'y, [])
+         ~is []
+
+  check: replace_binding(#'x, #'y, [bind(#'x, intV(1))])
+         ~is [bind(#'y, intV(1))]
+
+  check: replace_binding(#'x, #'y, [bind(#'x, intV(1)), bind(#'x, intV(2))])
+         ~is [bind(#'y, intV(1)), bind(#'x, intV(2))]
+
+  check: replace_binding(#'x, #'y, [bind(#'y, intV(1)), bind(#'x, intV(2))])
+         ~is [bind(#'y, intV(1)), bind(#'y, intV(2))]
+
+  check: lookup(#'y, replace_binding(#'x, #'y, [bind(#'y, intV(1)), bind(#'x, intV(2))]))
+         ~is intV(1)

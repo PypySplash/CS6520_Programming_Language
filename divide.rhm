@@ -1,0 +1,172 @@
+#lang shplait
+
+// Task 1: add an absolute-value form
+//   abs(-3) => 3
+
+// Task 2: add division
+
+// Task 3: add a `sum(....)` form that has any
+//   number of subexpressions
+
+type Exp
+| intE(n :: Int)
+| plusE(l :: Exp,
+        r :: Exp)
+| multE(l :: Exp,
+        r :: Exp)
+| absE(e :: Exp)
+| divE(l :: Exp,
+       r :: Exp)
+| sumE(ns :: Listof(Exp))
+
+// An EXP is either
+// - 'NUMBER'
+// - 'EXP + EXP'
+// - 'EXP * EXP'
+// - '(EXP)'
+// - 'abs(EXP)'
+// - 'EXP / EXP'
+
+fun parse(s :: Syntax) :: Exp:
+  cond
+  | syntax_is_integer(s):
+      intE(syntax_to_integer(s))
+  | ~else:
+      match s
+      | '$left + $right':
+          plusE(parse(left),
+                parse(right))
+      | '$left * $right':
+          multE(parse(left),
+                parse(right))
+      | '$left / $right':
+          divE(parse(left),
+               parse(right))
+      | 'abs($e)':
+          absE(parse(e))
+      | 'sum($e, ...)':
+          sumE(parse_list(syntax_to_list('[$e, ...]')))
+      | '($e)':
+          parse(e)
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+
+module test:
+  check: parse('2')
+         ~is intE(2)
+  check: parse('2 + 1')
+         ~is plusE(intE(2), intE (1))
+  check: parse('3 * 4')
+         ~is multE(intE(3), intE(4))
+  check: parse('3 * 4 + 8')
+         ~is plusE(multE(intE(3), intE(4)),
+                   intE(8))
+  check: parse('3 * (4 + 8)')
+         ~is multE(intE(3),
+                   plusE(intE(4), intE(8)))
+  check: parse('1 2')
+         ~raises "invalid input"
+  check: parse('abs(10)')
+         ~is absE(intE(10))
+  check: parse('1 + abs(3 * 2)')
+         ~is plusE(intE(1), absE(multE(intE(3), intE(2))))
+
+  check: parse('4 / 2')
+         ~is divE(intE(4), intE(2))
+
+  check: parse('sum()')
+         ~is sumE([])
+  check: parse('sum(1)')
+         ~is sumE([intE(1)])
+  check: parse('sum(1,2,3)')
+         ~is sumE([intE(1), intE(2), intE(3)])
+
+fun parse_list(syntaxes :: Listof(Syntax)) :: Listof(Exp):
+  match syntaxes
+  | []:
+      []
+  | cons(s, rst):
+      cons(parse(s), parse_list(rst))
+
+module test:
+  check: parse_list([])
+         ~is []
+  check: parse_list(cons('1', []))
+         ~is cons(intE(1), [])
+  check: parse_list(cons('1', cons('2', [])))
+         ~is cons(intE(1), cons(intE(2), []))
+
+fun interp(a :: Exp) :: Int:
+  match a
+  | intE(n): n
+  | plusE(l, r): interp(l) + interp(r)
+  | multE(l, r): interp(l) * interp(r)
+  | divE(l, r):
+      def result = interp(r)
+      cond
+      | result == 0: error(#'divide, "Undefined")
+      | ~else: interp(l) / result
+      // another good approach: separate `divide` helper function
+      // called as:  divide(interp(l), interp(r))
+  | absE(e):
+      def result = interp(e)
+      cond
+      | result >= 0: result
+      | ~else: -result
+      // another good approach: separate `abs` helper function
+      // called as:  abs(interp(e))
+  | sumE(es):
+      interp_and_sum_list(es)
+
+module test:
+  check: interp(intE(2))
+         ~is 2
+  check: interp(plusE(intE(2), intE(1)))
+         ~is 3
+  check: interp(multE(intE(2), intE(1)))
+         ~is 2
+  check: interp(plusE(multE(intE(2), intE(3)),
+                      plusE(intE(5), intE(8))))
+         ~is 19
+  check: interp(absE(intE(-5)))
+         ~is 5
+  check: interp(absE(intE(10)))
+         ~is 10
+  check: interp(absE(intE(0)))
+         ~is 0
+
+  check: interp(parse('1 + abs(9 + -10)'))
+         ~is 2
+
+  check: interp(parse('4 / 2'))
+         ~is 2
+
+  check: interp(parse('3 / 2'))
+         ~is 1
+
+  check: interp(parse('1 / 0'))
+         ~raises "Undefined"
+
+  check: interp(parse('1 / (2 + -2)'))
+         ~raises "Undefined"
+
+  check: interp(parse('sum(1, 2 + 3, 4 * 5)'))
+         ~is 26
+       
+fun interp_and_sum_list(es :: Listof(Exp)) :: Int:
+  match es
+  | []: 0
+  | cons(e, rst):
+      interp(e) + interp_and_sum_list(rst)
+
+module test:
+  check: interp_and_sum_list([])
+         ~is 0
+  check: interp_and_sum_list(cons(parse('1+2'),
+                                  []))
+         ~is 3
+  check: interp_and_sum_list(cons(parse('1+2'),
+                                  cons(parse('4'),
+                                       cons(parse('5 * 10'),
+                                            []))))
+         ~is 57

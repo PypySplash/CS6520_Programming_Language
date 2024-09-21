@@ -1,0 +1,313 @@
+#lang shplait
+
+type Exp
+| intE(n :: Int)
+| idE(s :: Symbol)
+| plusE(l :: Exp,
+        r :: Exp)
+| multE(l :: Exp,
+        r :: Exp)
+| appE(s :: Symbol,
+       arg :: Listof(Exp))
+| maxE(l :: Exp,
+       r :: Exp)
+
+type FunDef
+| fd(name :: Symbol,
+     arg :: Listof(Symbol),
+     body :: Exp)
+
+// An EXP is either
+// - 'NUMBER'
+// - 'SYMBOL'
+// - 'EXP + EXP'
+// - 'EXP * EXP'
+// - 'SYMBOL(EXP)'
+// - '(EXP)'
+
+fun parse(s :: Syntax) :: Exp:
+  cond
+  | syntax_is_integer(s):
+      intE(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      idE(syntax_to_symbol(s))
+  | ~else:
+      match s
+      | '$left + $right':
+          plusE(parse(left),
+                parse(right))
+      | '$left * $right':
+          multE(parse(left),
+                parse(right))
+      | '$sym($arg, ...)':  // 處理一般多參數應用,放在 max 之前
+          appE(syntax_to_symbol(sym),
+               map(parse, syntax_to_list('[$arg, ...]')))
+      // | '$sym($arg1, $arg2)':  // 處理 max 函數
+      //    if syntax_to_symbol(sym) == #'max:
+      //    | maxE(parse(arg1), parse(arg2))
+      //    | error(#'parse, "invalid input " +& s)
+      | '($e)':
+          parse(e)
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+          
+          
+fun has_duplicates(lst :: Listof(Symbol)) :: Boolean:
+  match lst
+  | []: #false
+  | cons(a, rst):
+      if member(a, rst)
+      | #true
+      | has_duplicates(rst)
+
+
+fun parse_fundef(s :: Syntax) :: FunDef:
+  match s
+  | 'fun $name(): $body':  // 首先處理無參數的函數定義
+      fd(syntax_to_symbol(name), [], parse(body))  // 參數列表是空
+  | 'fun $name($arg, ...): $body':  // 其次處理有參數的函數定義
+      block:
+        def arg_list = map(syntax_to_symbol, syntax_to_list('[$arg, ...]'))
+        // 使用 has_duplicates 檢查是否有重複的參數
+        if has_duplicates(arg_list)
+        | error(#'parse_fundef, "bad syntax: duplicate argument names")
+        // 如果沒有重複的參數,繼續處理
+        | fd(syntax_to_symbol(name), arg_list, parse(body))
+  | ~else:
+      error(#'parse_fundef, "invalid input: " +& s)
+
+check: parse_fundef('fun f(x, x): x')
+       ~raises "bad syntax"
+check: parse_fundef('fun f(x, y): x')
+       ~is fd(#'f, [#'x, #'y], idE(#'x))
+check: parse_fundef('fun (x, y): x + y') 
+       ~raises "invalid input"
+
+module test:
+  check: parse('2')
+         ~is intE(2)
+  check: parse('x')
+         ~is idE(#'x)
+  check: parse('2 + 1')
+         ~is plusE(intE(2), intE (1))
+  check: parse('3 * 4')
+         ~is multE(intE(3), intE(4))
+  check: parse('3 * 4 + 8')
+         ~is plusE(multE(intE(3), intE(4)),
+                   intE(8))
+  check: parse('double(9)')
+         ~is appE(#'double, [intE(9)])
+  check: parse('1 + double(9)')
+         ~is plusE(intE(1),
+                   appE(#'double, [intE(9)]))
+  check: parse('3 * (4 + 8)')
+         ~is multE(intE(3),
+                   plusE(intE(4), intE(8)))
+  check: parse('1 2')
+         ~raises "invalid input"
+
+  check: parse_fundef('fun double(x): x + x')
+         ~is fd(#'double, [#'x], plusE(idE(#'x), idE(#'x)))
+  // check: parse_fundef('fun f(): 1')
+  //       ~raises "invalid input"
+
+  def double_def = parse_fundef('fun double(x): x + x')
+  def quadruple_def = parse_fundef('fun quadruple(x): double(double(x))')
+
+fun interp_arg(arg :: Listof(Exp), defs :: Listof(FunDef)) :: Listof(Int):
+  fun interp_arg(arg :: Exp) :: Int:
+    interp(arg, defs)
+  map(interp_arg, arg)
+
+
+// interp ----------------------------------------
+fun interp(a :: Exp, defs :: Listof(FunDef)) :: Int:
+  match a
+  | intE(n): n  // 如果是整數,直接返回
+  | idE(s): error(#'interp, "free variable: " +& s)  // 處理自由變數
+  | plusE(l, r): interp(l, defs) + interp(r, defs)  // 處理加法
+  | multE(l, r): interp(l, defs) * interp(r, defs)  // 處理乘法
+  | maxE(l, r):
+      block:  // 處理 max 函數,返回兩者中的較大值
+        def lv = interp(l, defs)
+        def rv = interp(r, defs)
+        if lv > rv | lv | rv
+  | appE(s, arg):
+      block:  // 處理函數應用
+        def a_def = get_fundef(s, defs)  // 查找函數定義
+        
+        // 解釋所有的參數
+        def arg_vals = interp_arg(arg, defs)
+        
+        // 檢查參數數量是否匹配
+        if length(arg_vals) != length(fd.arg(a_def)):
+        | error(#'interp, "wrong arity: " +& s)
+        // 如果參數數量匹配,則繼續解釋
+        | interp(subst_multi(fd.arg(a_def),
+                             arg_vals,
+                             fd.body(a_def)),
+                 defs)
+
+module test:
+  check: interp(parse('2'), [])
+         ~is 2
+  check: interp(parse('x'), [])
+         ~raises "free variable"
+  check: interp(parse('2 + 1'), [])
+         ~is 3
+  check: interp(parse('2 * 1'), [])
+         ~is 2
+  check: interp(parse('(2 * 3) + (5 + 8)'), [])
+         ~is 19
+  check: interp(parse('double(8)'),
+                [double_def])
+         ~is 16
+  check: interp(parse('quadruple(8)'),
+                [double_def, quadruple_def])
+         ~is 32
+         
+module test:
+  check: interp(parse('max(1, 2)'), [])
+         ~is 2
+  check: interp(parse('max(4+5, 2+3)'), [])
+         ~is 9
+  check: interp(parse('max(7*2, 10)'), [])
+         ~is 14
+
+// get_fundef ----------------------------------------
+fun get_fundef(s :: Symbol, defs :: Listof(FunDef)) :: FunDef:
+  if s == #'max:  // 如果是內建的 max 函數,返回一個預設函數定義
+  | fd(#'max, [#'x, #'y], maxE(idE(#'x), idE(#'y)))  // 返回 max 函數的預設行為
+  | match defs
+    | []: error(#'get_fundef, "undefined function: " +& s)  // 未找到函數定義時報錯
+    | cons(a_def, rst_defs):
+        if s == fd.name(a_def)  // 如果函數名匹配,則返回該函數定義
+        | a_def
+        | get_fundef(s, rst_defs)  // 否則繼續在剩餘定義中查找
+          
+module test:
+  check: get_fundef(#'double, [double_def])
+         ~is double_def
+  check: get_fundef(#'double, [double_def, quadruple_def])
+         ~is double_def
+  check: get_fundef(#'double, [quadruple_def, double_def])
+         ~is double_def
+  check: get_fundef(#'quadruple, [quadruple_def, double_def])
+         ~is quadruple_def
+  check: get_fundef(#'double, [])
+         ~raises "undefined function"
+
+fun subst_multi(params :: Listof(Symbol), arg :: Listof(Int), body :: Exp) :: Exp:
+  // 定義輔助函數進行遞迴替換
+  fun subst_all(p_list :: Listof(Symbol), a_list :: Listof(Int), current_body :: Exp) :: Exp:
+    match p_list
+    | cons(p, p_rest):
+        match a_list
+        | cons(a, a_rest):
+            // 替換當前參數
+            subst_all(p_rest, a_rest, subst(intE(a), p, current_body))
+        | []:
+            // 當 arg 長度比 params 短時,不再處理,因為已經由 interp 檢查過
+            current_body
+    | []:
+        // 當 params 列表用完後檢查是否還有剩餘的 arg
+        match a_list
+        | []:
+            current_body
+        | cons(a, a_rest):
+            // 當 params 用完但 arg 還有剩餘,發生錯誤
+            error(#'subst_multi, "params shorter than arg")
+  // 開始替換
+  subst_all(params, arg, body)
+
+
+
+module test:
+  check: interp(parse('f(1, 2)'),
+                [parse_fundef('fun f(x, y): x + y')])
+         ~is 3
+  check: interp(parse('f() + f()'),
+                [parse_fundef('fun f(): 5')])
+         ~is 10
+  check: interp(parse('f(2, 3)'),
+                [parse_fundef('fun f(x, y): y + x + x')])
+         ~is 7
+  check: interp(parse('f(1)'),
+                [parse_fundef('fun f(x, y): x + y')])
+         ~raises "wrong arity"
+  check: interp(parse('f(1, 2, 3)'), [parse_fundef('fun f(x, y): x + y')])
+         ~raises "wrong arity"
+         
+
+// subst ----------------------------------------
+// 替換,在一個Exp中,把指定的變數(符號)替換成另一個表達式
+// ex. f(x), wanna replace x with 8
+// encounter with x, replace it to 8;
+// encounter with 2, remain unchanged
+// what: 想替換成的表達式; for: 要替換的變數(符號); in: 要進行替換的表達式  
+// subst: 將指定的變數替換為另一個表達式
+fun subst(what :: Exp, for :: Symbol, in :: Exp) :: Exp:
+  match in
+  | intE(n): in
+  | idE(s): (if for == s | what | in)  // 如果符號匹配,則替換
+  | plusE(l, r): plusE(subst(what, for, l),
+                       subst(what, for, r))  // 遞歸替換加法中的兩個子表達式
+  | multE(l, r): multE(subst(what, for, l),
+                       subst(what, for, r))  // 遞歸替換乘法中的兩個子表達式
+  | maxE(l, r): maxE(subst(what, for, l),
+                     subst(what, for, r))    // 遞歸替換 max 的參數
+  | appE(s, arg): appE(s, subst_list(what, for, arg))  // 使用新的輔助函數來替換參數列表
+
+// subst_list: 對 Listof(Exp) 進行替換,使用純遞歸處理列表
+fun subst_list(what :: Exp, for :: Symbol, arg :: Listof(Exp)) :: Listof(Exp):
+  match arg
+  | cons(head, rst): cons(subst(what, for, head), subst_list(what, for, rst))
+  | []: []
+
+
+// 測試 `arg` 長度比 `params` 短時
+check: subst_multi([#'x, #'y], [1], plusE(idE(#'x), idE(#'y)))
+       ~is plusE(intE(1), idE(#'y))
+
+// 測試 `params` 用完但 `arg` 還有剩餘時
+check: subst_multi([#'x], [1, 2], plusE(idE(#'x), idE(#'y)))
+       ~raises "params shorter than arg"
+
+module test:
+  check: subst(intE(8), #'x, intE(9))
+         ~is intE(9)
+  check: subst(intE(8), #'x, idE(#'x))
+         ~is intE(8)
+  check: subst(intE(8), #'x, idE(#'y))
+         ~is idE(#'y)
+  check: subst(intE(8), #'x, plusE(idE(#'x), idE(#'y)))
+         ~is plusE(intE(8), idE(#'y))
+  check: subst(intE(8), #'x, multE(idE(#'y), idE(#'x)))
+         ~is multE(idE(#'y), intE(8))
+  check: subst(intE(8), #'x, appE(#'double, [idE(#'x)]))
+         ~is appE(#'double, [intE(8)])
+
+module test:
+  // def f(x): 9
+  check: subst(parse('8'), #'x, parse('9'))
+         ~is parse('9')
+  // def f(x): x         f(8)
+  check: subst(parse('8'), #'x, parse('x'))
+         ~is parse('8')
+  // def f(x): y
+  check: subst(parse('8'), #'x, parse('y'))
+         ~is idE(#'y)
+  check: subst(parse('8'), #'x, parse('x + y'))
+         ~is plusE(parse('8'), idE(#'y))
+  check: subst(parse('8'), #'x, parse('y * x'))
+         ~is multE(idE(#'y), parse('8'))
+  // def q(x): double(x)
+  check: subst(parse('8'), #'x, parse('double(x)'))
+         ~is parse('double(8)')
+
+module test:
+  check: subst(intE(8), #'x, maxE(idE(#'x), idE(#'y)))
+         ~is maxE(intE(8), idE(#'y))
+  check: subst(intE(5), #'x, maxE(idE(#'x), intE(10)))
+         ~is maxE(intE(5), intE(10))
+

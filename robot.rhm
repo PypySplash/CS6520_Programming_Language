@@ -1,0 +1,99 @@
+#lang shplait
+
+type Instruction:
+| forward(steps :: Int) // steps must be greater than or equal to 0
+| left()
+| right()
+
+// The template:
+#//
+fun distance(instruction :: Instruction) :: Int:
+  match instruction
+  | forward(steps):
+      .... steps ....
+  | left():
+      ....
+  | right():
+      ....
+
+fun distance(instruction :: Instruction) :: Int:
+  match instruction
+  | forward(steps):
+      steps
+  | left():
+      0
+  | right():
+      0
+
+check: distance(forward(5))
+       ~is 5
+check: distance(left())
+       ~is 0
+check: distance(right())
+       ~is 0
+
+// The type `Listof(Instruction) is built in, but we
+// write out a pseudo-definition here as a reference for
+// following the design recipe:
+#//
+type Listof(Instruction)
+| []
+| cons(ins :: Instruction, rest :: Listof(Instruction))
+
+// Template:
+#//
+fun howfar(pro :: Listof(Instruction)):
+  match pro:
+  | []:
+      ....
+  | cons(ins, rest):
+      .... steps(ins) .... howfar(rest) ....
+
+fun howfar(pro :: Listof(Instruction)):
+  match pro:
+  | []:
+      0
+  | cons(ins, rst):
+      distance(ins) + howfar(rst)
+
+module test:
+  check: howfar([])
+         ~is 0
+  check: howfar(cons(forward(8),
+                     cons(left(),
+                          [])))
+         ~is 8
+
+fun have_left_turns(pro :: Listof(Instruction)):
+  match pro:
+  | []:
+      #false
+  | cons(ins, rst):
+      isleft(ins) || have_left_turns(rst)
+
+module test:
+  check: have_left_turns([])
+         ~is #false
+  check: have_left_turns(cons(left(),
+                              cons(right(),
+                                   [])))
+         ~is #true
+  check: have_left_turns(cons(forward(5),
+                              []))
+         ~is #false
+
+fun isleft(instruction :: Instruction) :: Boolean:
+  match instruction
+  | forward(steps):
+      #false
+  | left():
+      #true
+  | right():
+      #false
+
+check: isleft(forward(5))
+       ~is #false
+check: isleft(left())
+       ~is #true
+check: isleft(right())
+       ~is #false

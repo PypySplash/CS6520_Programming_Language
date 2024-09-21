@@ -1,0 +1,87 @@
+#lang shplait
+// test
+module test:
+  // PART 1
+  check: to_the_3rd(1)
+         ~is 1
+  check: to_the_3rd(17)
+         ~is 4913
+  check: to_the_3rd(10)
+         ~is 1000
+  // PART 2
+  check: to_the_42nd(1)
+         ~is 1
+  check: to_the_42nd(2)
+         ~is 4398046511104
+  check: to_the_42nd(17)
+         ~is 4773695331839566234818968439734627784374274207965089
+  // PART 3
+  check: plural("baby")
+         ~is "babies"
+  check: plural("fish")
+         ~is "fishs"
+  check: plural("")
+         ~is "s"     
+  // PART 4
+  check: electricity_usage(bulb(100, #'halogen))
+         ~is 2400
+  check: electricity_usage(candle(10))
+         ~is 0
+  // PART 5
+  check: use_for_one_hour(bulb(100, #'halogen))
+         ~is bulb(100, #'halogen)
+  check: use_for_one_hour(candle(10))
+         ~is candle(9)
+  check: use_for_one_hour(candle(1))
+         ~is candle(0)
+  check: use_for_one_hour(candle(0))
+         ~is candle(0)
+
+// PART 1
+fun to_the_3rd(x):
+  x * x * x
+
+// PART 2
+fun to_the_3rd_help(x, n):
+  cond
+  | n == 1:
+      to_the_3rd(x)
+  | ~else:
+      to_the_3rd(x) * (to_the_3rd_help(x, n - 1))
+
+fun to_the_42nd(x):
+  to_the_3rd_help(x, 14)
+
+// to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x)
+
+// PART 3
+fun plural(word :: String) :: String:
+  cond
+  | (string_length(word) > 0) && substring(word, string_length(word) - 1, string_length(word)) == "y":
+        string_append(substring(word, 0, string_length(word) - 1), "ies")
+  | ~else:
+        string_append(word, "s")
+
+type Light
+| bulb(watts :: Int, technology :: Symbol)
+| candle(inches :: Int)
+
+// PART 4
+fun electricity_usage(l :: Light) :: Int:
+  match l
+  | bulb(watts, technology):
+      watts * 24
+  | candle(inches):
+      0
+  
+// PART 5
+fun use_for_one_hour(l :: Light) :: Light:
+  match l
+  | bulb(watts, technology):
+      bulb(watts, technology)
+  | candle(inches):
+      cond
+      | inches > 0:
+          candle(inches - 1)
+      | ~else:
+          candle(0)

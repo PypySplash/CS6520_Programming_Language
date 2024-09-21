@@ -1,0 +1,154 @@
+#lang shplait
+
+type Tree
+| leaf(val :: Int)
+| node(left :: Tree,
+       val :: Int,
+       right :: Tree)
+
+// PART 1 - SUM
+fun sum(t :: Tree) :: Int:
+  match t
+  | node(left, val, right):
+      sum(left) + val + sum(right)
+  | leaf(val):
+      val
+
+check: sum(node(leaf(5), 6, leaf(7)))
+       ~is 18
+
+// PART 2 - ABSOLUTE
+fun absolute(t :: Tree) :: Tree:
+  match t
+  | node(left, val, right):
+      cond
+      | val < 0:
+          node(absolute(left), -val, absolute(right))
+      | ~else:
+          node(absolute(left), val, absolute(right))
+  | leaf(val):
+      cond
+      | val < 0:
+          leaf(-val)
+      | ~else:
+          leaf(val)
+
+check: absolute(node(leaf(5), -6, leaf(-7)))
+       ~is node(leaf(5), 6, leaf(7))
+check: absolute(node(leaf(-5), 6, leaf(-7)))
+       ~is node(leaf(5), 6, leaf(7))
+
+// PART 3 - CONTAINS
+fun contains(t :: Tree, i :: Int) :: Boolean:
+  match t
+  | node(left, val, right):
+      cond
+      | val == i:
+          #true
+      | contains(left, i) == #true:
+          #true
+      | contains(right, i) == #true:
+          #true
+      | ~else:
+          #false
+  | leaf(val):
+      cond
+      | val == i:
+          #true
+      | ~else:
+          #false
+
+check: contains(node(leaf(5), 6, leaf(7)), 5)
+       ~is #true
+check: contains(node(leaf(7), 6, leaf(5)), 5)
+       ~is #true
+check: contains(node(leaf(7), 5, leaf(6)), 5)
+       ~is #true
+check: contains(node(leaf(7), 6, leaf(6)), 5)
+       ~is #false
+       
+// PART 4 - SUMMARY LEAVES
+fun has_summary_leaves(t :: Tree) :: Boolean:
+  has_summary_plus_leaves(t, 0)
+
+fun has_summary_plus_leaves(t :: Tree, sum :: Int) :: Boolean:
+  match t
+  | node(left, val, right):
+      block:
+        def new_sum:
+          sum + val
+        has_summary_plus_leaves(left, new_sum) && has_summary_plus_leaves(right, new_sum)
+  | leaf(val):
+      sum == val
+
+check: has_summary_leaves(node(leaf(5), 5, node(leaf(3), -2, leaf(3))))
+       ~is #true
+check: has_summary_leaves(node(node(leaf(6), 1, leaf(8)), 5, leaf(5)))
+       ~is #false
+check: has_summary_leaves(node(leaf(-1), -1, node(leaf(2), 3, node(leaf(4), 2, leaf(4)))))
+       ~is #true
+       
+// PART 5 - ALL SUMMARY TREES
+fun all_summary_trees(tree_list :: Listof(Tree)) :: Boolean:
+  match tree_list
+  | []:
+      #true
+  | cons(t, rst_tree_list):
+      has_summary_leaves(t) && all_summary_trees(rst_tree_list)
+
+check: all_summary_trees(cons(leaf(0), []))
+       ~is #true
+check: all_summary_trees(cons(leaf(6), []))
+       ~is #false
+check: all_summary_trees(cons(node(leaf(1), 1, leaf(1)), []))
+       ~is #true
+check: all_summary_trees(cons(node(leaf(6), 6, node(leaf(7), 1, leaf(7))), cons(node(leaf(0), 0, leaf(0)), [])))
+       ~is #true
+check: all_summary_trees(cons(node(leaf(6), 1, leaf(6)), cons(node(leaf(0), 0, leaf(0)), [])))
+       ~is #false
+
+// PART 6 - OPTIONAL CHALLENGE: INORDER SUMMARY LEAVES
+type Dict:
+| dict(ok :: Boolean, sum :: Int)
+
+fun helper(t :: Tree, sum :: Int) :: Dict:
+  match t
+  | leaf(val):
+      dict(sum == val, sum + val)
+  | node(left, val, right):
+      block:
+        def left_dict:
+          helper(left, sum)
+        match left_dict
+        | dict(false, _):
+            dict(false, 0)
+        | dict(true, left_sum):
+            block:
+              def new_sum:
+                left_sum + val
+              def right_dict:
+                helper(right, new_sum)
+              right_dict
+          
+fun has_inorder_summary_leaves(t :: Tree) :: Boolean:
+  match helper(t, 0)
+  | dict(ok, _):
+      ok
+
+check: has_inorder_summary_leaves(leaf(0))
+       ~is #true
+
+check: has_inorder_summary_leaves(node(leaf(0), 4, leaf(4)))
+       ~is #true
+
+check: has_inorder_summary_leaves(node(leaf(0), -4, leaf(-4)))
+       ~is #true
+
+check: has_inorder_summary_leaves(node(leaf(0), 4, leaf(3)))
+       ~is #false
+
+check: has_inorder_summary_leaves(node(leaf(1), 4, leaf(5)))
+       ~is #false
+
+check: has_inorder_summary_leaves(node(node(leaf(0), 4, leaf(4)), -6, node(leaf(-2), 9, leaf(7))))
+       ~is #true
