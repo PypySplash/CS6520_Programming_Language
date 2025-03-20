@@ -1,0 +1,118 @@
+#lang shplait
+
+// Implement a `remove` function that removes a given
+// integer from a list of integers
+
+fun remove(lst :: Listof(Int), to_remove :: Int) :: Listof(Int):
+  match lst
+  | []:
+      []
+  | cons(frst, rst):
+      // In the case of the second example below:
+      // .... frst .... remove(rst, to_remove) .... to_remove
+      //      1               [2, 3], 2              2
+      //                        [3]
+      //    trying to get: [1, 3]
+      // In the case of the third example below:
+      // .... frst .... remove(rst, to_remove) .... to_remove
+      //      1               [2, 3], 1              1
+      //                      [2, 3], 1
+      //    trying to get: [2, 3]
+      def lst_removed = remove(rst, to_remove)
+      if frst == to_remove
+      | lst_removed
+      | cons(frst, lst_removed)
+
+module test:
+  check: remove([], 1)
+         ~is []
+  check: remove([1, 2, 3], 2)
+         ~is [1, 3]
+  check: remove([1, 2, 3], 1)
+         ~is [2, 3]
+  check: remove([1, 2, 3], 5)
+         ~is [1, 2, 3]
+  check: remove([1, 2, 2, 3], 2)
+         ~is [1, 3]
+
+// Implement `remove_all, which takes two lisst and removes
+// each item in the second list from the first list
+
+fun remove_all(lst :: Listof(Int), to_removes :: Listof(Int)) :: Listof(Int):
+  match to_removes
+  | []:
+      lst
+  | cons(frst, rst):
+      // In the case of the second example below:
+      //  .... remove(lst, frst) .... remove_all(lst, rst) ....
+      //           1,2,3   2               1,2,3     []
+      //               1,3                   1,2,3
+      // trying to get: [1, 3]
+      // In the case of the third example below:
+      //  .... remove(lst, frst) .... remove_all(lst, rst) ....
+      //           1,2,3   5               1,2,3     [2]
+      //               1,2,3                1,3
+      // trying to get: [1, 3]
+      // With these an more examples, we see that `remove_all(lst, rst)`
+      // isn't quite the right idea, and we want to feed the `remove`
+      // result into `remove_all`
+      remove_all(remove(lst, frst), rst) 
+
+module test:
+  check: remove_all([1,2,3], [])
+         ~is [1, 2, 3]
+  check: remove_all([1, 2, 3], [2])
+         ~is [1, 3]
+  check: remove_all([1, 2, 3], [5, 2])
+         ~is [1, 3]
+  check: remove_all([1, 2, 2, 3], [2, 3])
+         ~is [1]
+
+// Implement `max-list`, which takes two lists of the same length containing
+// integers, and returns a list of the same length containing the larger of
+// the two integers at corresponding positions. If the given lists have different
+// lengths, raise an error that includes the word "mismatch"
+
+fun max_list(lst1 :: Listof(Int), lst2 :: Listof(Int)) :: Listof(Int):
+  match lst1
+  | []:
+      match lst2
+      | []:
+          []
+      | cons(fst2, rst2):
+          error(#'max_list, "mismatch")
+  | cons(fst1, rst1):
+      match lst2
+      | []:
+          error(#'max_list, "mismatch")
+      | cons(fst2, rst2):
+          //.... fst1 .... fst2 .... max_list(rst1, rst2)
+          //                                 [2, 3]  [2, 2]
+          //                                    [2, 3]
+          cons(max(fst1, fst2),
+               max_list(rst1, rst2))
+
+module test:
+  check: max_list([], [])
+         ~is []
+  check: max_list([1, 2], [])
+         ~raises "mismatch"
+  check: max_list([], [1, 3])
+         ~raises "mismatch"
+  check: max_list([1, 2, 3], [2, 2, 2])
+         ~is [2, 2, 3]
+       
+  check: max_list([1, 2, 3], [3, 2])
+         ~raises "mismatch"
+
+// Above is the cartesian-product-of-cases approach. Could also
+// write it like this:
+#//
+fun max_list(lst1 :: Listof(Int), lst2 :: Listof(Int)) :: Listof(Int):
+  cond
+  | is_empty(lst1) && is_empty(lst2):
+      []
+  | is_cons(lst1) && is_cons(lst2):
+      ... first(lst1) ... first(lst2) ... max_list(rest(lst1), rest(lst2)) ...
+  | ~else:
+      error(...)

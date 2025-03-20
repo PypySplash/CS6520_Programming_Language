@@ -1,0 +1,810 @@
+#lang shplait
+
+// Garbage collection for run-time memory
+
+type Exp
+| intE(n :: Int)
+| idE(s :: Symbol)
+| plusE(l :: Exp,
+        r :: Exp)
+| multE(l :: Exp,
+        r :: Exp)
+| funE(n :: Symbol,
+       body :: Exp)
+| appE(fn :: Exp,
+       arg :: Exp)
+| if0E(tst :: Exp,
+       thn :: Exp,
+       els :: Exp)
+
+| boxE(e :: Exp)
+| unboxE(e :: Exp)
+| is_boxE(e :: Exp)
+
+| set_boxE(b :: Exp,
+           val :: Exp)
+/*
+    type ExpD
+ 8  | intD(n :: Int)
+ 9  | atD(n :: Int)
+ 10 | plusD(l :: ExpD,
+            r :: ExpD)
+ 11 | multD(l :: ExpD,
+            r :: ExpD)
+ 12 | funD(body :: ExpD)
+ 13 | appD(fn :: ExpD,
+           arg :: ExpD)
+ 14 | if0D(tst :: ExpD,
+           thn :: ExpD,
+           els :: ExpD)
+
+ 18 | boxD(e :: ExpD)
+ 19 | unboxD(e :: ExpD)
+ 20 | is_boxD(e :: ExpD)
+
+ 25 | set_boxD(b :: ExpD,
+               val :: ExpD)
+*/
+
+/*
+    type Value
+ 15 | intV(n :: Int)
+ 16 | closV(body :: ExpD,
+            env :: Env)
+
+ 21 | boxV(v :: Value)
+*/
+
+type BindingC
+| bindC(name :: Symbol)
+
+type EnvC = Listof(BindingC)
+
+def mt_env = []
+def extend_env = cons
+
+/*
+    type Cont
+ 0  | doneK()
+ 1  | plusSecondK(r :: ExpD,
+                  env :: Env,
+                  k :: Cont)
+ 2  | doPlusK(v1 :: Value,
+              k :: Cont)
+ 3  | multSecondK(r :: ExpD,
+                  env :: Env,
+                  k :: Cont)
+ 4  | doMultK(v1 :: Value,
+              k :: Cont)
+ 5  | appArgK(arg :: ExpD,
+              env :: Env,
+              k :: Cont)
+ 6  | doAppK(fun_val :: Value,
+             k :: Cont)
+ 7  | doIf0K(thn :: ExpD,
+             els :: ExpD,
+             env :: Env,
+             k :: Cont)
+ 22 | boxK(k :: Cont)
+ 23 | unboxK(k :: Cont)
+ 24 | is_boxK(k :: Cont)
+ 26 | set_boxK(val :: ExpD,
+               env :: Env,
+               k :: Cont)
+ 27 | do_set_boxK(box_val :: Value,
+                  k :: Cont)
+*/
+
+/* 
+ 17 cons for env
+ 99 moved
+*/
+
+// parse ----------------------------------------
+fun parse(s :: Syntax) :: Exp:
+  cond
+  | syntax_is_integer(s):
+      intE(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      idE(syntax_to_symbol(s))
+  | ~else:
+      match s
+
+      | 'box($e)':
+          boxE(parse(e))
+      | 'unbox($e)':
+          unboxE(parse(e))
+      | 'is_box($e)':
+          is_boxE(parse(e))
+
+      | 'set_box($b, $val)':
+          set_boxE(parse(b), parse(val))
+
+      | 'if $tst == 0 | $thn | $els':
+          if0E(parse(tst), parse(thn), parse(els))
+      | 'let $name = $rhs: $body':
+          appE(funE(syntax_to_symbol(name), parse(body)),
+               parse(rhs))               
+      | '$left + $right': plusE(parse(left), parse(right))
+      | '$left * $right': multE(parse(left), parse(right))
+      | 'fun ($id): $body': funE(syntax_to_symbol(id),
+                                 parse(body))
+      | '$fn($arg)': appE(parse(fn), parse(arg))
+      | '($e)': parse(e)
+      | ~else: error(#'parse, "invalid input: " +& s)
+
+module test:
+  check: parse('2')
+         ~is intE(2)
+  check: parse('x')
+         ~is idE(#'x)
+  check: parse('2 + 1')
+         ~is plusE(intE(2), intE (1))
+  check: parse('3 * 4')
+         ~is multE(intE(3), intE(4))
+  check: parse('3 * 4 + 8')
+         ~is plusE(multE(intE(3), intE(4)), intE(8))
+  check: parse('fun (x): 9')
+         ~is funE(#'x, intE(9))
+  check: parse('double(9)')
+         ~is appE(idE(#'double), intE(9))
+  check: parse('1 + double(9)')
+         ~is plusE(intE(1), appE(idE(#'double), intE(9)))
+  check: parse('3 * (4 + 8)')
+         ~is multE(intE(3), plusE(intE(4), intE(8)))
+  check: parse('let x = 1 + 2: y')
+         ~is appE(funE(#'x, idE(#'y)), plusE(intE(1), intE(2)))
+  check: parse('if 1 == 0 | 2 | 3')
+         ~is if0E(intE(1), intE(2), intE(3))
+  check: parse('1 2')
+         ~raises "invalid input"
+
+// ----------------------------------------
+// Allocator for code, which is never freed;
+// use `code_ref` instead of `ref` to refer to code
+
+def code_memory = make_array(2048, 0)
+def mutable code_ptr = 0
+
+fun code_incptr(n):
+  code_ptr := code_ptr + n
+  code_ptr - n
+
+fun code_malloc1(tag, a):
+  code_memory[code_ptr] := tag
+  code_memory[code_ptr + 1] := a
+  code_incptr(2)
+
+fun code_malloc2(tag, a, b):
+  code_memory[code_ptr] := tag
+  code_memory[code_ptr + 1] := a
+  code_memory[code_ptr + 2] := b
+  code_incptr(3)
+
+fun code_malloc3(tag, a, b, c):
+  code_memory[code_ptr] := tag
+  code_memory[code_ptr + 1] := a
+  code_memory[code_ptr + 2] := b
+  code_memory[code_ptr + 3] := c
+  code_incptr(4)
+
+fun code_ref(n, d):
+  code_memory[n+d]
+
+// ----------------------------------------
+
+fun compile(a, env):
+  match a
+
+  | boxE(e):
+      code_malloc1(18, compile(e, env))
+  | unboxE(e):
+      code_malloc1(19, compile(e, env))
+  | is_boxE(e):
+      code_malloc1(20, compile(e, env))
+
+  | set_boxE(b, val):
+      code_malloc2(25, compile(b, env), compile(val, env))
+    
+  | intE(n): code_malloc1(8, n)
+  | idE(name): code_malloc1(9, locate(name, env))
+  | plusE(l, r): code_malloc2(10, compile(l, env), compile(r, env))
+  | multE(l, r): code_malloc2(11, compile(l, env), compile(r, env))
+  | funE(n, body_expr): code_malloc1(12,
+                                     compile(body_expr,
+                                             extend_env(bindC(n), env)))
+  | appE(fn, arg): code_malloc2(13,
+                                compile(fn, env),
+                                compile(arg, env))
+  | if0E(tst, thn, els): code_malloc3(14,
+                                      compile(tst, env),
+                                      compile(thn, env),
+                                      compile(els, env))
+
+fun locate(name, env):
+  match env
+  | []: error(#'locate, "free variable: " +& name)
+  | cons(fst_b, rst_env): if name == bindC.name(fst_b)
+                          | 0
+                          | 1 + locate(name, rst_env)
+
+
+// ----------------------------------------
+// Memory allocator with a 2-space collector
+//  for run-time allocation
+
+def MEMORY_SIZE = 128
+
+def space1 = make_array(MEMORY_SIZE, 0)
+def space2 = make_array(MEMORY_SIZE, 0)
+
+def mutable memory = space1
+def mutable ptr_reg = 0
+
+def empty_memory = make_array(0, 0)
+def mutable from_memory = empty_memory
+
+def mutable result_reg = 0
+
+fun incptr(n):
+  // Increment the allocation pointer, and
+  //  if there's not enough room for the next
+  //  allocation, then collect garbage
+  ptr_reg := ptr_reg + n
+  if ptr_reg + 5 >= MEMORY_SIZE
+  | result_reg := ptr_reg - n
+    if from_memory == empty_memory
+    | gc()
+    | // Ran out of space while GCing
+      //  => GCing didn't reclaim anything,
+      //     so we're really out of space
+      error(#'malloc, "out of memory")
+  | ptr_reg - n
+      
+fun malloc1(tag, a):
+  memory[ptr_reg] := tag
+  memory[ptr_reg + 1] := a
+  incptr(2)
+
+fun malloc2(tag, a, b):
+  memory[ptr_reg] := tag
+  memory[ptr_reg + 1] := a
+  memory[ptr_reg + 2] := b
+  incptr(3)
+
+fun malloc3(tag, a, b, c):
+  memory[ptr_reg] := tag
+  memory[ptr_reg + 1] := a
+  memory[ptr_reg + 2] := b
+  memory[ptr_reg + 3] := c
+  incptr(4)
+
+fun malloc4(tag, a, b, c, d):
+  memory[ptr_reg] := tag
+  memory[ptr_reg + 1] := a
+  memory[ptr_reg + 2] := b
+  memory[ptr_reg + 3] := c
+  memory[ptr_reg + 4] := d
+  incptr(5)
+
+fun ref(n, d):
+  memory[n+d]
+
+// Pointer in to space; objects before the
+//  pointer are "black", and object after are "gray"
+def mutable updated_ptr_reg = 0
+
+fun gc() :: Int:
+  println("GCing")    
+  // Swap to and from space:
+  from_memory := memory
+  if memory === space1
+  | memory := space2
+  | memory := space1
+  ptr_reg := 0
+  // Update registers to start:
+  v_reg := move(v_reg)
+  env_reg := move(env_reg)
+  k_reg := move(k_reg)
+  result_reg := move(result_reg)
+  updated_ptr_reg := 0
+  // Loop until there are no gray objects:
+  update()
+
+fun update():
+  if updated_ptr_reg == ptr_reg
+  | // No more gray objects:
+    from_memory := empty_memory
+    result_reg
+  | // updated-ptr points to first gray object:
+    match ref(updated_ptr_reg, 0)
+    | 0 || 15:
+        // Record has just a non-pointer
+        done(1)
+    | 1 || 3 || 5 || 26:
+        // Record has two run-time pointers
+        //  in slots 2 and 3 (and a non-pointer in 1)
+        move_do(2)
+        move_do(3)
+        done(3)
+    | 2 || 4 || 6 || 17:
+        // Etc.
+        move_do(1)
+        move_do(2)
+        done(2)
+    | 16:
+        move_do(2)
+        done(2)
+    | 7:
+        move_do(3)
+        move_do(4)
+        done(4)
+
+    | 21 || 22 || 23 || 24: // boxV - has one pointer
+        move_do(1)
+        done(1)
+    #//
+    | 26: // set_boxK
+        move_do(1) // val ExpD
+        move_do(2) // env
+        move_do(3) // k
+        done(3)
+    | 27: // do_set_boxK
+        move_do(1) // box_val
+        move_do(2) // k
+        done(2)
+
+    #//
+    | ~else:
+        error(#'update, "internal error, unknown tag: " +& ref(updated_ptr_reg, 0))
+
+fun done(n):
+  updated_ptr_reg := updated_ptr_reg + n + 1
+  update()
+
+// move_do :: Int -> Void
+//  Updates pointer at updated-ptr+n, moving the
+//  target as necessary:
+fun move_do(n):
+  memory[updated_ptr_reg + n] := move(memory[updated_ptr_reg + n])
+
+// move :: Int -> Int
+//  If n refers to a white record, copy it to to-space and
+//   insert a forwarding pointer, so now it's gray
+// If n refers to a gray/black record, return the forwarding
+//   pointer.
+fun move(n):
+  if from_memory[n] == 99
+  | // Gray/black, get forwarded pointer:
+    from_memory[n+1]
+  | // White:
+    match from_memory[n]
+    | 0 || 15 || 21 || 22 || 23 || 24:
+        // size 1
+        from_memory[n+1] := malloc1(from_memory[n],
+                                    from_memory[n+1])
+    | 2 || 4 || 6 || 16 || 17 || 27:
+        // size 2
+        from_memory[n+1] := malloc2(from_memory[n],
+                                    from_memory[n+1],
+                                    from_memory[n+2])
+    | 1 || 3 || 5 || 26:
+        // size 3
+        from_memory[n+1] := malloc3(from_memory[n],
+                                    from_memory[n+1],
+                                    from_memory[n+2],
+                                    from_memory[n+3])
+    | 7:
+        // size 4
+        from_memory[n+1] := malloc4(from_memory[n],
+                                    from_memory[n+1],
+                                    from_memory[n+2],
+                                    from_memory[n+3],
+                                    from_memory[n+4])
+
+    #//
+    | ~else:
+        error(#'move, "internal error, unknown tag: " +& from_memory[n])
+    // Change to gray:
+    from_memory[n] := 99
+    // Return forwarding porter (that we just installed):
+    from_memory[n+1]
+
+// ----------------------------------------
+
+def mutable exp_reg = 0
+def mutable env_reg = 0
+
+// interp :: (ExpD, Env, Cont) -> Value
+fun interp():
+  match code_ref(exp_reg, 0)
+  | 8: // intD
+      v_reg := malloc1(15, code_ref(exp_reg, 1))
+      continue()
+  | 9: // atD
+      env2_reg := env_reg
+      n_reg := code_ref(exp_reg, 1)
+      env_ref()
+  | 10: // plusD
+      k_reg := malloc3(1, code_ref(exp_reg, 2), env_reg, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+  | 11: // multD
+      k_reg := malloc3(3, code_ref(exp_reg, 2), env_reg, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+  | 12: // funD
+      v_reg := malloc2(16, code_ref(exp_reg, 1), env_reg)
+      continue()
+  | 13: // appD
+      k_reg := malloc3(5, code_ref(exp_reg, 2), env_reg, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+  | 14: // if0D
+      k_reg := malloc4(7, code_ref(exp_reg, 2), code_ref(exp_reg, 3), env_reg, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+
+  | 18: // boxD
+      k_reg := malloc1(22, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+  | 19: // unboxD
+      k_reg := malloc1(23, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+  | 20: // is_boxD
+      k_reg := malloc1(24, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+
+  | 25: // set_boxD
+      k_reg := malloc3(26, code_ref(exp_reg, 2), env_reg, k_reg)
+      exp_reg := code_ref(exp_reg, 1)
+      interp()
+      
+  | ~else:
+      error(#'interp, "bad expression " +& code_ref(exp_reg, 0))
+
+def mutable k_reg = 0
+def mutable v_reg = 0
+
+// continue :: (Cont, Value) -> Value
+fun continue():
+  match ref(k_reg, 0)
+  | 0: //
+      v_reg
+  | 1: // plusSecondK
+      exp_reg := ref(k_reg, 1)
+      env_reg := ref(k_reg, 2)
+      k_reg := malloc2(2, v_reg, ref(k_reg, 3))
+      interp()
+  | 2: // doPlusK
+      v_reg := num_plus(ref(k_reg, 1), v_reg)
+      k_reg := ref(k_reg, 2)
+      continue()
+  | 3: // multSecondK
+      exp_reg := ref(k_reg, 1)
+      env_reg := ref(k_reg, 2)
+      k_reg := malloc2(4, v_reg, ref(k_reg, 3))
+      interp()
+  | 4: // doMultK
+      v_reg := num_mult(ref(k_reg, 1), v_reg)
+      k_reg := ref(k_reg, 2)
+      continue()
+  | 5: // appArgK
+      exp_reg := ref(k_reg, 1)
+      env_reg := ref(k_reg, 2)
+      k_reg := malloc2(6, v_reg, ref(k_reg, 3))
+      interp()
+  | 6: // doAppK
+      exp_reg := ref(ref(k_reg, 1), 1)
+      env_reg := malloc2(17, v_reg, ref(ref(k_reg, 1), 2))
+      k_reg := ref(k_reg, 2)
+      interp()
+  | 7: // doIf0K
+      if num_is_zero(v_reg)
+      | exp_reg := ref(k_reg, 1)
+      | exp_reg := ref(k_reg, 2)
+      env_reg := ref(k_reg, 3)
+      k_reg := ref(k_reg, 4)
+      interp()
+
+  | 22: // boxK
+      v_reg := malloc1(21, v_reg)
+      k_reg := ref(k_reg, 1)
+      continue()
+  | 23: // unboxK
+      if ref(v_reg, 0) == 21
+      | v_reg := ref(v_reg, 1)
+        k_reg := ref(k_reg, 1)
+        continue()
+      | error(#'continue, "not a box")
+  | 24: // is_boxK
+      v_reg := malloc1(15, if ref(v_reg, 0) == 21 | 0 | 1)
+      k_reg := ref(k_reg, 1)
+      continue()
+
+  | 26: // set_boxK
+      if ref(v_reg, 0) == 21
+      | exp_reg := ref(k_reg, 1)
+        env_reg := ref(k_reg, 2)
+        k_reg := malloc2(27, v_reg, ref(k_reg, 3))
+        interp()
+      | error(#'continue, "not a box")
+  | 27: // do_set_boxK
+      memory[ref(k_reg, 1) + 1] := v_reg // Update box contents
+      v_reg := malloc1(15, 0) // Return 0 (or any value)
+      k_reg := ref(k_reg, 2)
+      continue()
+      
+  | ~else:
+      error(#'continue, "bad continuation " +& ref(k_reg, 0))
+
+fun num_op(op :: (Int, Int) -> Int):
+  fun (l, r):
+    malloc1(15, op(ref(l, 1), ref(r, 1)))
+def num_plus = num_op(fun (a, b): a+b)
+def num_mult = num_op(fun (a, b): a*b)
+
+fun num_is_zero(v):
+  ref(v, 1) == 0
+
+def mutable env2_reg = 0
+def mutable n_reg = 0
+
+fun env_ref():
+  if n_reg == 0
+  | v_reg := ref(env2_reg, 1)
+    continue()
+  | env2_reg := ref(env2_reg, 2)
+    n_reg := n_reg - 1
+    env_ref()
+
+// ----------------------------------------
+
+fun init_k(): malloc1(0, 0)
+
+fun interpx(a, env, k):
+  exp_reg := a
+  env_reg := env
+  k_reg := k
+  interp()
+
+def empty_env = malloc1(0, 0)
+
+macro 'N $check: $expr
+                 ~is $n':
+  '$check: ref($expr, 1)
+           ~is $n'
+
+fun reset():
+  code_ptr := 0
+  ptr_reg := 0
+  v_reg := 0
+  exp_reg := 0
+  k_reg := 0
+  env_reg := 0
+  result_reg := 0
+  from_memory := empty_memory
+
+module test:
+  N check: interpx(compile(parse('2'), mt_env),
+                   empty_env,
+                   init_k())
+           ~is 2
+  reset()
+  check: compile(parse('x'), mt_env)
+         ~raises "free variable"
+  reset()
+  N check: interpx(compile(parse('2 + 1'), mt_env),
+                   empty_env,
+                   init_k())
+           ~is 3
+  reset()
+  N check: interpx(compile(parse('2 * 1'), mt_env),
+                   empty_env,
+                   init_k())
+           ~is 2
+  reset()
+  N check: interpx(compile(parse('(2 * 3) + (5 + 8)'), mt_env),
+                   empty_env,
+                   init_k())
+           ~is 19
+  reset()
+  N check: interpx(compile(parse('(fun (x): x + x)(17)'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 34
+  reset()
+  N check: interpx(compile(parse('let x = 5: x + x'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 10
+  reset()
+  N check: interpx(compile(parse('let x = 5:
+                                    let y = 6:
+                                      x'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 5
+  reset()
+  N check: interpx(compile(parse('(fun (x): x + x)(8)'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 16
+  reset()
+  N check: interpx(compile(parse('if 0 == 0 | 1 | 2'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 1
+  reset()
+  N check: interpx(compile(parse('if 1 == 0 | 1 | 2'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 2
+  reset()
+  N check: interpx(compile(
+                     parse(
+                       'let mkrec = (fun (body_proc):
+                                       (fun (fX):
+                                          fX(fX))(fun (fX):
+                                                    body_proc(fun (x):
+                                                                fX(fX)(x)))):
+                          let fib = mkrec(fun (fib):
+                                            fun (n):
+                                              if n == 0:
+                                              | 1
+                                              | if (n + -1) == 0
+                                                | 1
+                                                | fib(n + -1) + fib(n + -2)):
+                            fib(4)'
+                     ),
+                     mt_env),
+                   empty_env,
+                   init_k())
+           ~is 5
+
+  // coverage for error cases:
+  reset()
+  check: block:
+           def exp = compile(parse('1'), mt_env)
+           interpx(exp + 1, empty_env, init_k())
+         ~raises "bad expression"    
+  check: block:
+           def exp = compile(parse('1'), mt_env)
+           interpx(exp, empty_env, exp)
+         ~raises "bad continuation"
+  reset()
+  check: interpx(compile(parse('let f = (fun (f): 1 + f(f)):
+                                  f(f)'),
+                         mt_env),
+                 empty_env,
+                 init_k())
+         ~raises "out of memory"
+
+  reset()
+  check: interpx(compile(parse('unbox(3)'),
+                         mt_env),
+                 empty_env,
+                 init_k())
+         ~raises "not a box"
+
+  reset()
+  check: interpx(compile(parse('set_box(3, 4)'),
+                         mt_env),
+                 empty_env,
+                 init_k())
+         ~raises "not a box"
+
+  // Homework #8
+  // PART 1
+  reset()
+  N check: interpx(compile(parse('unbox(unbox(box(box(3))))'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 3
+  
+  reset()
+  N check: interpx(compile(parse('is_box(3)'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 1
+  
+  reset()
+  N check: interpx(compile(parse('is_box(box(3))'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 0
+  
+  reset()
+  N check: interpx(compile(parse('is_box(fun (x): box(x))'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 1
+  reset()
+  N check: interpx(compile(parse('(unbox(box(fun (x): x)))(3)'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 3
+
+  reset()
+  N check: interpx(compile(
+                     parse(
+                       'let mkrec = (fun (body_proc):
+                                       (fun (fX):
+                                          fX(fX))(fun (fX):
+                                                    body_proc(fun (x):
+                                                                fX(fX)(x)))):
+                          let chain = mkrec(fun (chain):
+                                              fun (n):
+                                                if n == 0
+                                                | 1
+                                                | box(chain(n + -1))):
+                            let unchain = mkrec(fun (unchain):
+                                                  fun (n):
+                                                    fun (b):
+                                                      if n == 0
+                                                      | b
+                                                      | unchain(n + -1)(unbox(b))):
+                              // Make a chain of boxes, then traverse them:
+                              unchain(13)(chain(13))'
+                       ),
+                     mt_env),
+                   empty_env,
+                   init_k())
+           ~is 1
+
+  // PART 2
+  reset()
+  N check: interpx(compile(parse('let b = box(3):
+                                    let dummy = set_box(b, 4):
+                                      unbox(b)'),
+                           mt_env),
+                   empty_env,
+                   init_k())
+           ~is 4
+  
+  reset()
+  N check: interpx(
+             compile(
+               parse(
+                 'let mkrec = (fun (body_proc):
+                                 (fun (fX):
+                                    fX(fX))(fun (fX):
+                                              body_proc(fun (x):
+                                                          fX(fX)(x)))):
+                    let chain = mkrec(fun (chain):
+                                        fun (n):
+                                          if n == 0
+                                          | 1
+                                          | box(chain(n + -1))):
+                      // Make a chain of boxes in a box:
+                      let bx = box(chain(13)):
+                        let unchain = mkrec(
+                          fun (unchain):
+                            fun (n):
+                              if n == 0
+                              | unbox(bx)
+                              | let dummy = set_box(bx, unbox(unbox(bx))):
+                                  unchain(n + -1)):
+                          // Walk through the chain of boxes, but pass the box
+                          // argument in `bx` instead of as a regular argument
+                          unchain(13)'
+                 ),
+               mt_env),
+             empty_env,
+             init_k())
+           ~is 1
+                           

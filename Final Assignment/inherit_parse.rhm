@@ -1,0 +1,368 @@
+#lang shplait
+import:
+  open:
+    "class.rhm"
+    "inherit.rhm"
+    "types.rhm"
+
+// ----------------------------------------
+
+fun parse_class(s :: Syntax) :: (Symbol * ClassI):
+  match s
+  | 'class $name($field, ...):
+       extends $parent_name
+       $method
+       ...':
+      values(syntax_to_symbol(name),
+             classI(syntax_to_symbol(parent_name),
+                    map(parse_field,
+                        syntax_to_list('[$field, ...]')),
+                    map(parse_method,
+                        syntax_to_list('[$method, ...]'))))
+  | ~else: error(#'parse_class, "invalid input: " +& s)
+
+
+
+fun parse_field(s :: Syntax) :: Symbol:
+  cond
+  | syntax_is_symbol(s):
+      syntax_to_symbol(s)
+  | ~else: error(#'parse_field, "invalid input: " +& s)
+
+
+
+fun parse_method(s :: Syntax) :: (Symbol * ExpI):
+  match s
+  |'method $name(arg): $body':
+     values(syntax_to_symbol(name),
+            parse_method_body(body))
+  | ~else: error(#'parse_method, "invalid input: " +& s)
+
+
+
+fun parse_method_body(s :: Syntax) :: ExpI:
+  cond
+  | syntax_is_integer(s):
+      intI(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      let name = syntax_to_symbol(s):
+        cond
+        | name == #'arg: argI()
+        | name == #'this: thisI()
+        | ~else: fieldI(name)
+  | ~else:
+      match s
+      // 1.
+      | '($(id :: Identifier))$exp':
+          castI(syntax_to_symbol(id),
+                parse_method_body(exp))
+      // 5.
+      | 'let $name :: $ty = $rhs: $body':
+          if syntax_to_symbol(name) == #'this
+          | error(#'parse, "invalid input: " +& s)
+          | letI(syntax_to_symbol(name),
+                 parse_type(ty),
+                 parse_expr(rhs),
+                 parse_expr(body))
+      | '$left + $right':
+          plusI(parse_expr(left),
+                parse_expr(right))
+      | '$left * $right':
+          multI(parse_expr(left),
+                parse_expr(right))
+      | 'new $id($arg, ...)':
+          newI(syntax_to_symbol(id),
+               map(parse_expr, syntax_to_list('[$arg, ...]')))
+      | 'super . $method_name ($arg)':
+          superI(syntax_to_symbol(method_name),
+                 parse_expr(arg))
+      | '$obj . $method_name ($arg)':
+          sendI(parse_expr(obj),
+                syntax_to_symbol(method_name),
+                parse_expr(arg))
+      | '$obj . $field_name':
+          getI(parse_expr(obj),
+               syntax_to_symbol(field_name))
+      | '($e)':
+          parse_expr(e)
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+
+
+
+fun parse_expr(s :: Syntax) :: ExpI:  
+  cond
+  | syntax_is_integer(s):
+      intI(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      let name = syntax_to_symbol(s):
+        cond
+        | name == #'arg: argI()
+        | name == #'this: thisI()
+        | ~else: idI(name)
+  | ~else:
+      match s
+      // 1.
+      | '($(id :: Identifier))$exp':
+          castI(syntax_to_symbol(id),
+                parse(exp))
+      // 5.
+      | 'let $name :: $ty = $rhs: $body':
+          if syntax_to_symbol(name) == #'this
+          | error(#'parse, "invalid input: " +& s)
+          | letI(syntax_to_symbol(name),
+                 parse_type(ty),
+                 parse_expr(rhs),
+                 parse_expr(body))
+      | '$left + $right':
+          plusI(parse_expr(left),
+                parse_expr(right))
+      | '$left * $right':
+          multI(parse_expr(left),
+                parse_expr(right))
+      | 'new $id($arg, ...)':
+          newI(syntax_to_symbol(id),
+               map(parse_expr, syntax_to_list('[$arg, ...]')))
+      | 'super . $method_name ($arg)':
+          superI(syntax_to_symbol(method_name),
+                 parse_expr(arg))
+      | '$obj . $method_name ($arg)':
+          sendI(parse_expr(obj),
+                syntax_to_symbol(method_name),
+                parse_expr(arg))
+      | '$obj . $field_name':
+          getI(parse_expr(obj),
+               syntax_to_symbol(field_name))
+      | '($e)':
+          parse_expr(e)
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+
+
+
+
+fun parse(s :: Syntax) :: ExpI:
+  cond
+  | syntax_is_integer(s):
+      intI(syntax_to_integer(s))
+  | ~else:
+      match s
+      // 1.
+      | '($(id :: Identifier))$exp':
+          castI(syntax_to_symbol(id),
+                parse(exp))
+      | 'arg': argI()
+      | 'this': thisI()
+      // 5.
+      | 'let $name :: $ty = $rhs: $body':
+          if syntax_to_symbol(name) == #'this
+          | error(#'parse, "invalid input: " +& s)
+          | letI(syntax_to_symbol(name),
+                 parse_type(ty),
+                 parse(rhs),
+                 parse_expr(body))
+      | '$left + $right':
+          plusI(parse(left),
+                parse(right))
+      | '$left * $right':
+          multI(parse(left),
+                parse(right))
+      | 'new $id($arg, ...)':
+          newI(syntax_to_symbol(id),
+               map(parse, syntax_to_list('[$arg, ...]')))
+      | 'super . $method_name ($arg)':
+          superI(syntax_to_symbol(method_name),
+                 parse(arg))
+      | '$obj . $method_name ($arg)':
+          sendI(parse(obj),
+                syntax_to_symbol(method_name),
+                parse(arg))
+      | '$obj . $field_name':
+          getI(parse(obj),
+               syntax_to_symbol(field_name))
+      | '($e)':
+          parse(e)
+      | ~else:  
+          error(#'parse, "invalid input: " +& s)
+
+module test:
+  check: parse('0')
+         ~is intI(0)
+  check: parse('arg')
+         ~is argI()
+  check: parse('this')
+         ~is thisI()
+  check: parse('1 + 2')
+         ~is plusI(intI(1), intI(2))
+  check: parse('1 * 2')
+         ~is multI(intI(1), intI(2))
+  check: parse('new Posn(1, 2)')
+         ~is newI(#'Posn, [intI(1), intI(2)])
+  check: parse('this.x')
+         ~is getI(thisI(), #'x)
+  check: parse('this.m(2)')
+         ~is sendI(thisI(), #'m, intI(2))
+  check: parse('super.m(1)')
+         ~is superI(#'m, intI(1))
+  check: parse('x')
+         ~raises "invalid input"
+  check: parse_field('x')
+         ~is #'x
+  check: parse_field('x 1')
+         ~raises "invalid input"
+  check: parse_method('method m(arg): this')
+         ~is values(#'m, thisI())
+  check: parse_method('m(arg): 1 2')
+         ~raises "invalid input"
+  check: parse_class('class Posn3D(x, y, z):
+                        extends Posn 
+                        method m1(arg): arg
+                        method m2(arg): this')
+         ~is values(#'Posn3D,
+                    classI(#'Posn,
+                           [#'x, #'y, #'z],
+                           [values(#'m1, argI()),
+                            values(#'m2, thisI())]))
+  check: parse_class('class')
+         ~raises "invalid input"
+
+// ----------------------------------------
+
+// Interpret a Moe program with inheritance that is
+// written with concrete syntax
+fun interp_prog(classes :: Listof(Syntax), s :: Syntax) :: Syntax:
+  let v = interp_i(parse(s),
+                   map(parse_class, classes)):
+    match v
+    | intV(n): integer_to_syntax(n)
+    | objV(class_name, field_vals): 'object'
+    // 8.
+    | nullV(): 'null'
+
+module test:
+  check: interp_prog(
+           ['class Empty():
+               extends Object'],
+           'new Empty()'
+         )
+         ~is 'object'
+
+  check: interp_prog(
+           ['class Posn(x, y):
+               extends Object
+               method mdist(arg): this.x + this.y
+               method addDist(arg): arg.mdist(0) + this.mdist(0)',
+            'class Posn3D(z):
+               extends Posn
+               method mdist(arg): this.z + super.mdist(arg)'],
+           '(new Posn3D(5, 3, 1)).addDist(new Posn(2, 7))'
+         )
+         ~is '18'
+
+// 5.
+module test:
+  check: parse('let this :: Int = 5: 1')
+         ~raises "invalid input"
+  check: parse('let x :: Int = 5: x')
+         ~is letI(#'x, intT(), intI(5), idI(#'x))
+  check: parse('let x :: Int = 5: x + 1')
+         ~is letI(#'x, intT(), intI(5), plusI(idI(#'x), intI(1)))
+  check: parse('let x :: Int = y: x')
+         ~raises "invalid input"
+  check: parse('let this :: Int = 5: 1')
+         ~raises "invalid input"
+  check: parse('let x :: Int = 5: let y :: Int = 6: x + y')
+         ~is letI(#'x, intT(), intI(5), 
+                  letI(#'y, intT(), intI(6), 
+                       plusI(idI(#'x), idI(#'y))))
+  check: parse_expr('0')
+         ~is intI(0)
+  check: parse_expr('x')
+         ~is idI(#'x)
+  check: parse_expr('arg')
+         ~is argI()
+  check: parse_expr('this')
+         ~is thisI()
+  check: parse_expr('1 + x')
+         ~is plusI(intI(1), idI(#'x))
+  check: parse_expr('x * 2')
+         ~is multI(idI(#'x), intI(2))
+  check: parse_expr('let y :: Int = x: y + 1')
+         ~is letI(#'y, intT(), idI(#'x), plusI(idI(#'y), intI(1)))
+  check: parse_expr('let this :: Int = 1: 2')
+         ~raises "invalid input"
+  check: parse_expr('new Posn(x, y)')
+         ~is newI(#'Posn, [idI(#'x), idI(#'y)])
+  check: parse_expr('x.m(y)')
+         ~is sendI(idI(#'x), #'m, idI(#'y))
+  check: parse_expr('x.field')
+         ~is getI(idI(#'x), #'field)
+  check: parse_expr('super.m(x)')
+         ~is superI(#'m, idI(#'x))
+  check: parse_expr('(x)')
+         ~is idI(#'x)
+  check: parse_expr('(x + y).m(z)')
+         ~is sendI(plusI(idI(#'x), idI(#'y)), #'m, idI(#'z))
+  check: parse_expr('invalid-syntax')
+         ~raises "invalid input"
+// 6.
+module test:
+  check: parse_method('method getX(arg): x')  
+         ~is values(#'getX, fieldI(#'x))
+  check: parse_method('method basic(arg): 42')
+         ~is values(#'basic, intI(42))
+  check: parse_method('method keywords(arg): arg')
+         ~is values(#'keywords, argI())
+  check: parse_method('method this_test(arg): this')
+         ~is values(#'this_test, thisI())
+  check: parse_method('method let_this(arg): let this :: Int = 5: 1')
+         ~raises "invalid input"
+  check: parse_method('method let_test(arg): let x :: Int = 5: x')
+         ~is values(#'let_test, 
+                    letI(#'x, intT(), intI(5), idI(#'x)))
+  check: parse_method('method add(arg): field1 + field2')
+         ~is values(#'add, 
+                    plusI(idI(#'field1), idI(#'field2)))
+  check: parse_method('method mult(arg): field1 * field2')
+         ~is values(#'mult, 
+                    multI(idI(#'field1), idI(#'field2)))
+  check: parse_method('method new_obj(arg): new TestClass(field1, field2)')
+         ~is values(#'new_obj, 
+                    newI(#'TestClass, 
+                         [idI(#'field1), idI(#'field2)]))
+  check: parse_method('method super_call(arg): super.method(field1)')
+         ~is values(#'super_call, 
+                    superI(#'method, idI(#'field1)))
+  check: parse_method('method method_call(arg): obj.method(field1)')
+         ~is values(#'method_call, 
+                    sendI(idI(#'obj), #'method, idI(#'field1)))
+  check: parse_method('method field_access(arg): obj.field')
+         ~is values(#'field_access, 
+                    getI(idI(#'obj), #'field))
+  check: parse_method('method paren(arg): (field1)')
+         ~is values(#'paren, idI(#'field1))
+  check: parse_method('method nested(arg): (field1 + field2).method(field3)')
+         ~is values(#'nested, 
+                    sendI(plusI(idI(#'field1), idI(#'field2)), 
+                          #'method, 
+                          idI(#'field3)))
+  check: parse_method('method invalid(arg): {invalid}')
+         ~raises "invalid input"
+  check: parse_method('method invalid(arg): 1 2 3')
+         ~raises "invalid input"
+  check: parse_method('method invalid(arg): while true { }')
+         ~raises "invalid input"
+// 1.
+module test:
+  check: parse('(Posn)new Object()')  
+         ~is castI(#'Posn, newI(#'Object, []))
+  check: parse('(Posn3D)(Posn)this')
+         ~is castI(#'Posn3D, castI(#'Posn, thisI()))
+  check: parse('((Posn)this).x')
+         ~is getI(castI(#'Posn, thisI()), #'x)
+  check: parse_method('method convert(arg): (Posn)arg') 
+         ~is values(#'convert, castI(#'Posn, argI()))
+  check: parse_method('method convert(arg): (Posn)x')
+         ~is values(#'convert, castI(#'Posn, fieldI(#'x)))
+  check: parse_expr('(Posn)this')
+         ~is castI(#'Posn, thisI())

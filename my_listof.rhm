@@ -1,0 +1,12 @@
+#lang shplait
+
+type MyListof(?a)
+| myempty(n :: Int)
+| mycons(p :: ?a * MyListof(?a))
+
+letrec len = (fun (xs :: MyListof(?a)):
+                match xs
+                | myempty(n): 0
+                | mycons(hd_tl): 1 + len(snd(hd_tl))):
+  len(mycons(values(1, myempty(0))))
+    + len(mycons(values((fun (y): y), myempty(0))))

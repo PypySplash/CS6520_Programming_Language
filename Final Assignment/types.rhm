@@ -1,0 +1,29 @@
+#lang shplait
+
+type Type
+| intT()
+| objT(class_name :: Symbol)
+// 8.
+| nullT()  // Add null type
+
+fun parse_type(s :: Syntax) :: Type:
+  match s
+  | 'Int': intT()
+
+  | 'Null': nullT()  // Add this case
+  | ~else:
+      cond
+      | syntax_is_symbol(s):
+          objT(syntax_to_symbol(s))
+      | ~else: error(#'parse_type, "invalid input: " +& s)
+
+module test:
+  check: parse_type('Int')
+         ~is intT()
+  check: parse_type('Object')
+         ~is objT(#'Object)
+  check: parse_type('()')
+         ~raises "invalid input"
+
+  check: parse_type('Null')
+         ~is nullT()

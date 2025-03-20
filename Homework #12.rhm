@@ -1,0 +1,173 @@
+#lang shplait
+
+type Valueof(?a)
+| litV(n :: ?a)
+| closV(arg :: Symbol,
+        body :: Expof(?a),
+        env :: Envof(?a))
+
+type Expof(?a)
+| litE(n :: ?a)
+| idE(s :: Symbol)
+| plusE(l :: Expof(?a),
+        r :: Expof(?a))
+| multE(l :: Expof(?a),
+        r :: Expof(?a))
+| funE(n :: Symbol,
+       body :: Expof(?a))
+| appE(fn :: Expof(?a),
+       arg :: Expof(?a))
+
+type Bindingof(?a)
+| bind(name :: Symbol,
+       val :: Valueof(?a))
+
+type Envof(?a) = Listof(Bindingof(?a))
+
+def mt_env = []
+def extend_env = cons
+
+// parse ----------------------------------------
+def parse :: (Syntax, (Syntax -> Boolean), (Syntax -> ?a)) -> Expof(?a):
+  fun (s, is_lit, to_lit):
+    cond
+    | is_lit(s):
+        litE(to_lit(s))
+    | syntax_is_symbol(s):
+        idE(syntax_to_symbol(s))
+    | ~else:
+        match s
+        | 'let $name = $rhs:
+             $body':
+            appE(funE(syntax_to_symbol(name),
+                      parse(body, is_lit, to_lit)),
+                 parse(rhs, is_lit, to_lit))               
+        | '$left + $right':
+            plusE(parse(left, is_lit, to_lit),
+                  parse(right, is_lit, to_lit))
+        | '$left * $right':
+            multE(parse(left, is_lit, to_lit),
+                  parse(right, is_lit, to_lit))
+        | 'fun ($id): $body':
+            funE(syntax_to_symbol(id),
+                 parse(body, is_lit, to_lit))
+        | '$fn($arg)':
+            appE(parse(fn, is_lit, to_lit),
+                 parse(arg, is_lit, to_lit))
+        | '($e)':
+            parse(e, is_lit, to_lit)
+        | ~else:
+            error(#'parse, "invalid input: " +& s)
+
+fun parse_int(s):
+  parse(s, syntax_is_integer, syntax_to_integer)
+
+fun parse_str(s):
+  parse(s, syntax_is_string, syntax_to_string)
+
+// interp ----------------------------------------
+def interp :: (Expof(?a), Envof(?a), (?a, ?a) -> ?a, (?a, ?a) -> ?a) -> Valueof(?a):
+  fun (a, env, plus_op, mult_op):
+    match a
+    | litE(n): litV(n)
+    | idE(s): lookup(s, env)
+    | plusE(l, r): 
+        num_op(plus_op,
+               interp(l, env, plus_op, mult_op),
+               interp(r, env, plus_op, mult_op))
+    | multE(l, r): 
+        num_op(mult_op,
+               interp(l, env, plus_op, mult_op),
+               interp(r, env, plus_op, mult_op))
+    | funE(n, body): closV(n, body, env)
+    | appE(fn, arg):
+        match interp(fn, env, plus_op, mult_op)
+        | closV(n, body, c_env):
+            interp(body,
+                   extend_env(bind(n, interp(arg, env, plus_op, mult_op)),
+                              c_env),
+                   plus_op,
+                   mult_op)
+        | ~else: error(#'interp, "not a function")
+
+fun interp_int(a, env):
+  interp(a, env, 
+         fun(x, y): x + y,
+         fun(x, y): x * y)
+
+fun interp_str(a, env):
+  interp(a, env,
+         fun(x, y): string_append(x, y),
+         fun(x, y): y)
+
+fun num_op(op :: (?a, ?a) -> ?a, l :: Valueof(?a), r :: Valueof(?a)) :: Valueof(?a):
+  cond
+  | l is_a litV && r is_a litV:
+      litV(op(litV.n(l), litV.n(r)))
+  | ~else:
+      error(#'interp, "not a valid operand")
+
+// lookup ----------------------------------------
+def lookup :: (Symbol, Envof(?a)) -> Valueof(?a):
+  fun (n, env):
+    match env
+    | []: error(#'lookup, "free variable: " +& n)
+    | cons(b, rst_env):
+        cond
+        | n == bind.name(b):
+            bind.val(b)
+        | ~else:
+            lookup(n, rst_env)
+
+module test:
+  check: parse_int('2')
+         ~is litE(2)
+  check: parse_int('x')
+         ~is idE(#'x)
+  check: parse_int('2 + 1')
+         ~is plusE(litE(2), litE(1))
+  check: interp_int(parse_int('2'), mt_env)
+         ~is litV(2)
+  check: interp_int(parse_int('2 + 3'), mt_env)
+         ~is litV(5)
+  check: interp_int(parse_int('2 * 3'), mt_env)
+         ~is litV(6)
+
+  check: parse_str('"hello"')
+         ~is litE("hello")
+  check: parse_str('x')
+         ~is idE(#'x)
+  check: parse_str('"hello" + "world"')
+         ~is plusE(litE("hello"), litE("world"))
+  check: interp_str(parse_str('"hello"'), mt_env)
+         ~is litV("hello")
+  check: interp_str(parse_str('"hello" + "world"'), mt_env)
+         ~is litV("helloworld")
+  check: interp_str(parse_str('"hello" * "world"'), mt_env)
+         ~is litV("world")
+
+  check: interp_int(parse_int('let x = 5: x + x'), mt_env)
+         ~is litV(10)
+  check: interp_int(parse_int('(fun (x): x + x)(8)'), mt_env)
+         ~is litV(16)
+  check: interp_int(parse_int('1(2)'), mt_env)
+         ~raises "not a function"
+  check: interp_int(parse_int('1 + (fun (x): x)'), mt_env)
+         ~raises "not a valid operand"
+
+  check: interp_str(parse_str('let x = "hi": x + x'), mt_env)
+         ~is litV("hihi")
+  check: interp_str(parse_str('(fun (x): x + x)("hi")'), mt_env)
+         ~is litV("hihi")
+
+  check: lookup(#'x, mt_env)
+         ~raises "free variable"
+  check: lookup(#'x, [])
+         ~raises "free variable: x"
+  check: lookup(#'y, extend_env(bind(#'x, litV(9)),
+                                extend_env(bind(#'y, litV(8)),
+                                           mt_env)))
+         ~is litV(8)
+  check: parse_int('1 2')
+         ~raises "invalid input"
+

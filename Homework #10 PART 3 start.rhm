@@ -1,0 +1,730 @@
+#lang shplait
+
+type Value
+| intV(n :: Int)
+| closV(args :: Listof(Symbol),
+        body :: Exp,
+        env :: Env)
+| trueV()
+| falseV()
+
+| pairV(l :: Value,
+        r :: Value)
+
+type Exp
+| intE(n :: Int)
+| idE(s :: Symbol)
+| plusE(l :: Exp,
+        r :: Exp)
+| multE(l :: Exp,
+        r :: Exp)
+| funE(args :: Listof(Symbol),  
+       arg_types :: Listof(Type),
+       body :: Exp)
+| appE(fn :: Exp,
+       args :: Listof(Exp))
+
+| trueE()
+| falseE()
+| eqE(l :: Exp,
+      r :: Exp)
+| ifE(test :: Exp,
+      then :: Exp,
+      else :: Exp)
+
+| pairE(l :: Exp,
+        r :: Exp)
+| fstE(e :: Exp)
+| sndE(e :: Exp)
+
+type Type
+| intT()
+| boolT()
+| arrowT(args :: Listof(Type),
+         result :: Type)
+
+| crossT(l :: Type,
+         r :: Type)
+
+type Binding
+| bind(name :: Symbol,
+       val :: Value)
+
+type Env = Listof(Binding)
+
+type TypeBinding
+| tbind(name :: Symbol,
+        ty :: Type)
+
+type TypeEnv = Listof(TypeBinding)
+
+def mt_env = []
+def extend_env = cons
+
+// parse ----------------------------------------
+fun parse(s :: Syntax) :: Exp:
+  cond
+  | syntax_is_integer(s):
+      intE(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      idE(syntax_to_symbol(s))
+  | s == '#true':
+      trueE()
+  | s == '#false':
+      falseE()
+  | ~else:
+      match s
+
+      | 'if $test | $then | $else':
+          ifE(parse(test),
+              parse(then),
+              parse(else))
+      | 'let $name :: $ty = $rhs:
+           $body':
+          appE(funE([syntax_to_symbol(name)],
+                    [parse_type(ty)],
+                    parse(body)),
+               [parse(rhs)])
+
+      | '$left == $right':
+          eqE(parse(left),
+              parse(right))
+      | '$left + $right':
+          plusE(parse(left),
+                parse(right))
+
+      | '$left * $right':
+          multE(parse(left),
+                parse(right))
+      | 'fun ($id :: $ty, ...): $body':  // Handle multiple arguments
+          funE(map(syntax_to_symbol, syntax_to_list('[$id, ...]')),
+               map(parse_type, syntax_to_list('[$ty, ...]')),
+               parse(body))
+      #//
+      | 'fun (): $body':  // Handle no arguments
+          funE([], [], parse(body))
+
+      | 'pair($l, $r)':
+          pairE(parse(l), parse(r))
+      | 'fst($e)':
+          fstE(parse(e))
+      | 'snd($e)':
+          sndE(parse(e))
+      | '$fn($arg, ...)':  // Handle multiple arguments
+          appE(parse(fn),
+               map(parse, syntax_to_list('[$arg, ...]')))
+      | '($e)':
+          parse(e)
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+
+fun parse_type(s :: Syntax) :: Type:
+  match s
+  | 'Int': intT()
+  | 'Boolean': boolT()
+
+  | '($arg, ...) -> $result':  // Handle multiple argument types
+      arrowT(map(parse_type, syntax_to_list('[$arg, ...]')),
+             parse_type(result))
+  #//
+  | '$arg1 -> $arg2 -> $result':
+      // make `->` right-associative
+      parse_type('$arg1 -> ($arg2 -> $result)')
+  | '$arg -> $result':  // Handle single argument as special case
+      arrowT([parse_type(arg)], parse_type(result))
+
+  | '$l * $r':
+      crossT(parse_type(l), parse_type(r))
+  | '($ty)': parse_type(ty)
+  | ~else: error(#'parse_type, "invalid input: " +& s)
+
+module test:
+  check: parse('2')
+         ~is intE(2)
+  check: parse('x')
+         ~is idE(#'x)
+  check: parse('2 + 1')
+         ~is plusE(intE(2), intE (1))
+  check: parse('3 * 4')
+         ~is multE(intE(3), intE(4))
+  check: parse('3 * 4 + 8')
+         ~is plusE(multE(intE(3), intE(4)),
+                   intE(8))
+  #//
+  check: parse('fun (x :: Int): 9')
+         ~is funE(#'x, intT(), intE(9))
+  check: parse('fun (x :: Int): 9')
+         ~is funE([#'x], [intT()], intE(9))
+  #//
+  check: parse('double(9)')
+         ~is appE(idE(#'double), intE(9))
+  check: parse('double(9)')
+         ~is appE(idE(#'double), [intE(9)])
+         
+  check: parse('1 + double(9)')
+         ~is plusE(intE(1),
+                   appE(idE(#'double), [intE(9)]))
+  check: parse('3 * (4 + 8)')
+         ~is multE(intE(3),
+                   plusE(intE(4), intE(8)))
+  #//
+  check: parse('let x :: Int = 1 + 2:
+                  y')
+         ~is appE(funE(#'x,
+                       intT(),
+                       idE(#'y)),
+                  plusE(intE(1), intE(2)))
+  check: parse('let x :: Int = 1 + 2:
+                  y')
+         ~is appE(funE([#'x],
+                       [intT()],
+                       idE(#'y)),
+                  [plusE(intE(1), intE(2))])
+
+  check: parse('1 2')
+         ~raises "invalid input"
+
+  check: parse_type('Int')
+         ~is intT()
+  check: parse_type('Boolean')
+         ~is boolT()
+  check: parse_type('Int -> Boolean')
+         ~is arrowT([intT()], boolT())
+  check: parse_type('Int -> (Boolean -> Int)')
+         ~is arrowT([intT()], arrowT([boolT()], intT()))
+  check: parse_type('Int -> Boolean -> Int')
+         ~is arrowT([arrowT([intT()], boolT())], intT())
+  check: parse_type('1')
+         ~raises "invalid input"
+
+
+// Helper function for extending environment with multiple value bindings
+fun extend_env_vals(env :: Env, names :: Listof(Symbol), vals :: Listof(Value)) :: Env:
+  match names
+  | []: 
+      match vals
+      | []: env
+      | ~else: error(#'extend_env_vals, "mismatched names and values")
+  | cons(name, rest_names):
+      match vals
+      | cons(val, rest_vals):
+          extend_env_vals(extend_env(bind(name, val), env),
+                          rest_names,
+                          rest_vals)
+      | ~else:
+          error(#'extend_env_vals, "mismatched names and values")
+
+// Helper function for extending environment with multiple type bindings
+fun extend_env_types(env :: TypeEnv, names :: Listof(Symbol), types :: Listof(Type)) :: TypeEnv:
+  match names
+  | []: 
+      match types
+      | []: env
+      | ~else: error(#'extend_env_types, "mismatched names and types")
+  | cons(name, rest_names):
+      match types
+      | cons(ty, rest_types):
+          extend_env_types(extend_env(tbind(name, ty), env),
+                           rest_names,
+                           rest_types)
+      | ~else:
+          error(#'extend_env_types, "mismatched names and types")
+
+module test:
+  check: extend_env_vals(mt_env, [], [])
+         ~is mt_env
+  check: extend_env_vals(mt_env,
+                         [#'x, #'y],
+                         [intV(42), intV(43)])
+         ~is extend_env(bind(#'y, intV(43)),
+                        extend_env(bind(#'x, intV(42)), 
+                                   mt_env))
+  check: extend_env_vals(mt_env, [#'x], [])
+         ~raises "mismatched names and values"
+  check: extend_env_types(mt_env, [], [])
+         ~is mt_env
+  check: extend_env_types(mt_env,
+                          [#'x, #'y],
+                          [intT(), boolT()])
+         ~is extend_env(tbind(#'y, boolT()),
+                        extend_env(tbind(#'x, intT()),
+                                   mt_env))
+  check: extend_env_types(mt_env, [#'x], [])
+         ~raises "mismatched names and types"
+  check: extend_env_vals(mt_env, [], [intV(42)])
+         ~raises "mismatched names and values"
+  check: extend_env_types(mt_env, [], [intT()])
+         ~raises "mismatched names and types"
+
+// interp ----------------------------------------
+fun interp(a :: Exp, env :: Env) :: Value:
+  match a
+  | intE(n): intV(n)
+
+  | trueE(): trueV()
+  | falseE(): falseV()
+  | idE(s): lookup(s, env)
+  | plusE(l, r): num_plus(interp(l, env), interp(r, env))
+  | multE(l, r): num_mult(interp(l, env), interp(r, env))
+
+  | eqE(l, r):
+      match interp(l, env)
+      | intV(n1):
+          match interp(r, env)
+          | intV(n2):
+              cond
+              | n1 == n2: trueV()
+              | ~else: falseV()
+          | ~else: error(#'interp, "== requires numbers")
+      | ~else: error(#'interp, "== requires numbers")
+  | ifE(test, then, else):
+      match interp(test, env)
+      | trueV(): interp(then, env)
+      | falseV(): interp(else, env)
+      | ~else: error(#'interp, "if test must be boolean")
+  | funE(n, arg_type, body): closV(n, body, env)
+
+
+  | appE(fn, args):
+      match interp(fn, env)
+      | closV(params, body, c_env):
+          if length(params) == length(args)
+          | def arg_vals = map(fun (arg): interp(arg, env), args)
+            interp(body, extend_env_vals(c_env, params, arg_vals))
+          | error(#'interp, "wrong number of arguments")
+      | ~else: error(#'interp, "not a function")
+
+  | pairE(l, r):
+      pairV(interp(l, env),
+            interp(r, env))
+  | fstE(e):
+      match interp(e, env)
+      | pairV(l, r): l
+      | ~else: error(#'interp, "not a pair")
+  | sndE(e):
+      match interp(e, env)
+      | pairV(l, r): r
+      | ~else: error(#'interp, "not a pair")
+
+
+module test:
+  check: interp(parse('2'), mt_env)
+         ~is intV(2)
+  check: interp(parse('x'), mt_env)
+         ~raises "free variable"
+  check: interp(parse('x'),
+                extend_env(bind(#'x, intV(9)), mt_env))
+         ~is intV(9)
+  check: interp(parse('2 + 1'), mt_env)
+         ~is intV(3)
+  check: interp(parse('2 * 1'), mt_env)
+         ~is intV(2)
+  check: interp(parse('(2 * 3) + (5 + 8)'), mt_env)
+         ~is intV(19)
+  #//
+  check: interp(parse('fun (x :: Int):
+                         x + x'),
+                mt_env)
+         ~is closV(#'x, plusE(idE(#'x), idE(#'x)), mt_env)
+  check: interp(parse('fun (x :: Int):
+                         x + x'),
+                mt_env)
+         ~is closV([#'x], plusE(idE(#'x), idE(#'x)), mt_env)
+  check: interp(parse('let x :: Int = 5: x + x'),
+                mt_env)
+         ~is intV(10)
+  check: interp(parse('let x :: Int = 5:
+                         let x :: Int = x + 1:
+                           x + x'),
+                mt_env)
+         ~is intV(12)
+  check: interp(parse('let x :: Int = 5:
+                         let y :: Int = 6:
+                           x'),
+                mt_env)
+         ~is intV(5)
+  check: interp(parse('(fun (x :: Int): x + x)(8)'),
+                mt_env)
+         ~is intV(16)
+  check: interp(parse('1(2)'), mt_env)
+         ~raises "not a function"
+  check: interp(parse('1 + (fun (x :: Int): x)'), mt_env)
+         ~raises "not a number"
+  check: interp(parse('let bad :: Int -> Int = (fun (x :: Int):
+                                                        x + y):
+                         let y :: Int = 5:
+                           bad(2)'),
+                mt_env)
+         ~raises "free variable"
+  check: interp(parse('(fun (x :: Int): x + 1)(1, 2)'), mt_env)
+         ~raises "wrong number of arguments"
+               
+// num_plus and num_mult ----------------------------------------
+fun num_op(op :: (Int, Int) -> Int, l :: Value, r :: Value) :: Value:
+  cond
+  | l is_a intV && r is_a intV:
+      intV(op(intV.n(l), intV.n(r)))
+  | ~else:
+      error(#'interp, "not a number")
+fun num_plus(l :: Value, r :: Value) :: Value:
+  num_op(fun (a, b): a+b, l, r)
+fun num_mult(l :: Value, r :: Value) :: Value:
+  num_op(fun (a, b): a*b, l, r)
+
+module test:
+  check: num_plus(intV(1), intV(2))
+         ~is intV(3)
+  check: num_mult(intV(3), intV(2))
+         ~is intV(6)
+  
+// lookup ----------------------------------------
+fun make_lookup(get_name :: ?a -> Symbol, get_val :: ?a -> ?b):
+  fun (n :: Symbol, env :: Listof(?a)) :: ?b:
+    match env
+    | []: error(#'lookup, "free variable")
+    | cons(b, rst_env):
+        cond
+        | n == get_name(b):
+            get_val(b)
+        | ~else:
+            make_lookup(get_name, get_val)(n, rst_env)
+
+def lookup = make_lookup(bind.name, bind.val)
+
+module test:
+  check: lookup(#'x, mt_env)
+         ~raises "free variable"
+  check: lookup(#'x, extend_env(bind(#'x, intV(8)), mt_env))
+         ~is intV(8)
+  check: lookup(#'x, extend_env(bind(#'x, intV(9)),
+                                extend_env(bind(#'x, intV(8)),
+                                           mt_env)))
+         ~is intV(9)
+  check: lookup(#'y, extend_env(bind(#'x, intV(9)),
+                                extend_env(bind(#'y, intV(8)),
+                                           mt_env)))
+         ~is intV(8)
+
+
+// typecheck ----------------------------------------
+fun typecheck(a :: Exp, tenv :: TypeEnv) :: Type:
+  match a
+  | intE(n): intT()
+
+  | trueE(): boolT()
+  | falseE(): boolT()
+  | idE(n): type_lookup(n, tenv)
+  | plusE(l, r): typecheck_nums(l, r, tenv)
+  | multE(l, r): typecheck_nums(l, r, tenv)
+
+  | eqE(l, r):
+      match typecheck(l, tenv)
+      | intT():
+          match typecheck(r, tenv)
+          | intT(): boolT()
+          | ~else: type_error(r, "num")
+      | ~else: type_error(l, "num")
+  | ifE(test, then, else):
+      match typecheck(test, tenv)
+      | boolT():
+          def then_type = typecheck(then, tenv)
+          def else_type = typecheck(else, tenv)
+          if then_type == else_type
+          | then_type
+          | type_error(else, "matching branch type")
+      | ~else: type_error(test, "boolean")
+  | funE(args, arg_types, body):
+      arrowT(arg_types,
+             typecheck(body,
+                       extend_env_types(tenv,
+                                        args,
+                                        arg_types)))
+  | appE(fn, args):
+      match typecheck(fn, tenv)
+      | arrowT(param_types, result_type):
+          if length(param_types) == length(args)
+          | def arg_types = map(fun (arg): typecheck(arg, tenv), args)
+            if all_equal(param_types, arg_types)
+            | result_type
+            | type_error(args, "argument type mismatch")
+          | type_error(args, "wrong number of arguments")
+      | ~else: type_error(fn, "function")
+  | pairE(l, r):
+      crossT(typecheck(l, tenv),
+             typecheck(r, tenv))
+  | fstE(e):
+      match typecheck(e, tenv)
+      | crossT(l, r): l
+      | ~else: type_error(e, "pair")
+  | sndE(e):
+      match typecheck(e, tenv)
+      | crossT(l, r): r
+      | ~else: type_error(e, "pair")
+
+fun typecheck_nums(l, r, tenv):
+  match typecheck(l, tenv)
+  | intT():
+      match typecheck(r, tenv)
+      | intT():
+          intT()
+      | ~else: type_error(r, "num")
+  | ~else: type_error(l, "num")
+
+fun type_error(a, msg):
+  error(#'typecheck, "no type: " +& a +& " not " +& msg)
+
+def type_lookup: make_lookup(tbind.name, tbind.ty)
+
+// Helper function to check if all types in a list match
+fun all_equal(types1 :: Listof(Type), types2 :: Listof(Type)) :: Boolean:
+  match types1
+  | []:
+      match types2
+      | []: #true
+      | ~else: #false
+  | cons(t1, rest1):
+      match types2
+      | cons(t2, rest2):
+          if t1 == t2
+          | all_equal(rest1, rest2)
+          | #false
+      | ~else: #false
+
+
+module test:
+  check: typecheck(parse('10'), mt_env)
+         ~is intT()
+  check: typecheck(parse('10 + 17'), mt_env)
+         ~is intT()
+  check: typecheck(parse('10 * 17'), mt_env)
+         ~is intT()
+  check: typecheck(parse('fun (x :: Int): 12'), mt_env)
+         ~is arrowT([intT()], intT())
+  check: typecheck(parse('fun (x :: Int): fun (y :: Boolean): x'),
+                   mt_env)
+         ~is arrowT([intT()], arrowT([boolT()], intT()))
+
+  check: typecheck(parse('(fun (x :: Int): 12)(1 + 17)'),
+                   mt_env)
+         ~is intT()
+
+  check: typecheck(parse('let x :: Int = 4:
+                            let f :: (Int -> Int) = (fun (y :: Int):
+                                                             x + y):
+                              f(x)'),
+                   mt_env)
+         ~is intT()
+
+  check: typecheck(parse('1(2)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('(fun (x :: Boolean): x)(2)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('1 + (fun (x :: Int): x)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('(fun (x :: Int): x) * 1'),
+                   mt_env)
+         ~raises "no type"
+
+
+  check: interp(parse('(fun (x :: Int): x) == 1'), mt_env)
+         ~raises "== requires numbers"
+  check: interp(parse('1 == (fun (x :: Int): x)'), mt_env)
+         ~raises "== requires numbers"
+  check: interp(parse('(fun (x :: Int): x) == (fun (y :: Int): y)'), mt_env)
+         ~raises "== requires numbers"
+  check: interp(parse('#true == 1'), mt_env)
+         ~raises "== requires numbers"
+  check: interp(parse('1 == (fun (x :: Boolean): x)(#true)'), mt_env)
+         ~raises "== requires numbers"
+  check: interp(parse('if 1 | 2 | 3'), mt_env)
+         ~raises "if test must be boolean"
+  check: interp(parse('if (fun (x :: Int): x) | 2 | 3'), mt_env)
+         ~raises "if test must be boolean"
+  check: interp(parse('if (1 + 2) | 4 | 5'), mt_env)
+         ~raises "if test must be boolean"
+  check: interp(parse('let f :: Int -> Int = (fun (x :: Int): x):
+                        if f(1) | 2 | 3'), 
+                mt_env)
+         ~raises "if test must be boolean"
+  check: typecheck(parse('#true == 1'), mt_env)
+         ~raises "no type: trueE() not num"
+
+  check: typecheck(parse('1 == #true'), mt_env)
+         ~raises "no type: trueE() not num"
+
+  check: typecheck(parse('if 42 | 1 | 2'), mt_env)
+         ~raises "no type: intE(42) not boolean"
+  check: typecheck(parse('if (1 + 2) | 1 | 2'), mt_env)
+         ~raises "no type: plusE(intE(1), intE(2)) not boolean"
+
+  check: typecheck(parse('if #true | (fun (x :: Int): x) | 42'), mt_env)
+         ~raises "no type: intE(42) not matching branch type"
+  check: typecheck(parse('if #true | #true | 42'), mt_env)
+         ~raises "no type: intE(42) not matching branch type"
+  check: interp(parse('fst(1)'), mt_env)
+         ~raises "not a pair"
+  check: interp(parse('snd(1)'), mt_env)
+         ~raises "not a pair"
+  check: typecheck(parse('snd(1)'), mt_env)
+         ~raises "no type: intE(1) not pair"
+  check: parse('fun (): 42')
+         ~is funE([], [], intE(42))
+  check: all_equal([], [intT()])
+         ~is #false
+  check: all_equal([intT()], [])
+         ~is #false
+  check: all_equal([intT(), boolT()], [boolT(), boolT()])
+         ~is #false
+  check: all_equal([intT(), intT()], [intT()])
+         ~is #false
+
+
+  // Homework #10
+  // PART 1
+  check: interp(parse('if #true | 4 | 5'),
+                mt_env)
+         ~is intV(4)
+  check: interp(parse('if #false | 4 | 5'),
+                mt_env)
+         ~is intV(5)
+  check: interp(parse('if 13 == (if 1 == -1 + 2
+                                 | 12
+                                 | 13)
+                       | 4
+                       | 5'),
+                mt_env)
+         ~is intV(5)
+  check: typecheck(parse('13 == (if 1 == -1 + 2
+                                 | 12
+                                 | 13)'),
+                   mt_env)
+         ~is boolT()
+  check: typecheck(parse('if 1 == -1 + 2
+                          | fun (x :: Int): x + 1
+                          | fun (y :: Int): y'),
+                   mt_env)
+         // This result may need to be adjusted after part 3:
+         ~is arrowT([intT()], intT())
+  check: typecheck(parse('1 + if #true | #true | #false'),
+                   mt_env)
+         ~raises "no type"
+  // PART 2
+  check: interp(parse('pair(10, 8)'),
+                mt_env)
+         // Your constructor might be different than pairV:
+         ~is pairV(intV(10), intV(8))
+  check: interp(parse('fst(pair(10, 8))'),
+                mt_env)
+         ~is intV(10)
+  check: interp(parse('snd(pair(10, 8))'),
+                mt_env)
+         ~is intV(8)
+  check: interp(parse('let p :: Int * Int = pair(10, 8):
+                         fst(p)'),
+                mt_env)
+         ~is intV(10)
+  check: interp(parse('let f :: Int -> Int * Int
+                         = (fun (n :: Int):
+                              pair(n, n+1)):
+                           snd(f(10))'),
+                mt_env)
+         ~is intV(11)
+  check: interp(parse('let f :: Int * Boolean -> Int
+                         = (fun (p :: Int * Boolean):
+                              fst(p)):
+                           f(pair(10, #false))'),
+                mt_env)
+         ~is intV(10)
+         
+  check: typecheck(parse('pair(10, 8)'),
+                   mt_env)
+         // Your constructor might be different than crossT:
+         ~is crossT(intT(), intT())
+  check: typecheck(parse('fst(pair(10, 8))'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('snd(pair(10, 8))'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('let p :: Int * Int = pair(10, 8):
+                            fst(p)'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('let f :: Int -> Int * Int
+                            = (fun (n :: Int):
+                                 pair(n, n+1)):
+                              snd(f(10))'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('let f :: Int * Boolean -> Int
+                            = (fun (p :: Int * Boolean):
+                                 fst(p)):
+                              f(pair(10, #false))'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('let f :: Int * Boolean -> Boolean
+                            = (fun (p :: Int * Boolean):
+                                 snd(p)):
+                              f(pair(10, #false))'),
+                   mt_env)
+         ~is boolT()
+  check: typecheck(parse('fun (x :: Int * Boolean):
+                            if snd(x)
+                            | fst(x)
+                            | 0'),
+                   mt_env)
+         // Your constructor might be different than crossT:
+         ~is arrowT([crossT(intT(), boolT())], intT())
+         
+  // PART 3
+  check: typecheck(parse('fst(10)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('1 + fst(pair(#false, 10))'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('fun (x :: Int * Boolean):
+                            if fst(x)
+                            | 1
+                            | 2'),
+                   mt_env)
+         ~raises "no type"
+
+  check: interp(parse('(fun (): 10)()'),
+                mt_env)
+         ~is intV(10)
+  check: interp(parse('(fun (x :: Int, y :: Int): x+y)(10, 20)'),
+                mt_env)
+         ~is intV(30)
+  
+  check: typecheck(parse('(fun (x :: Int, y :: Int): x+y)(10, 20)'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('(fun (x :: Int, y :: Boolean): y)(10, #false)'),
+                   mt_env)
+         ~is boolT()
+  
+  check: typecheck(parse('(fun (x :: Int, y :: Boolean): y)(#false, 10)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('(fun (): 10)(1, 2, 3)'),
+                   mt_env)
+         ~raises "no type"
+  
+  check: typecheck(parse('let x :: Int = 4:
+                            let f :: (Int, Int) -> Int
+                              = (fun (y :: Int, z :: Int):
+                                   z + y):
+                                f(x, x)'),
+                   mt_env)
+         ~is intT()
+  check: typecheck(parse('let x :: Int = 4:
+                            let f :: (Boolean, Int) -> Int
+                              = (fun (sel :: Boolean, z :: Int):
+                                   if sel | x | z):
+                                f(x == 5, 0)'),
+                   mt_env)
+         ~is intT()

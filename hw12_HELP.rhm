@@ -1,0 +1,45 @@
+#lang shplait
+
+fun f(x :: ?a, y :: ?a):
+  if #true
+  | x
+  | y
+
+fun g(x :: ?a, y :: ?a -> ?b):
+  //values(x + 1, y)
+  if #true
+  | x
+  | y(x)
+
+fun f1(x :: ?a): x
+
+fun f2(x :: ?a): x
+
+fun f3(x):
+  (fun (y): y)
+
+type Containerof(?a)
+| bin(x :: ?a)
+
+def ident = (fun (x :: ?a): x)
+
+fun parse_int(s :: Syntax) :: Containerof(Int):
+  cond
+  | syntax_is_integer(s): bin(syntax_to_integer(s))
+
+fun parse_str(s :: Syntax) :: Containerof(String):
+  cond
+  | syntax_is_string(s): bin(syntax_to_string(s))
+
+fun parse(s :: Syntax,
+          pred :: Syntax -> Boolean,
+          f :: Syntax -> ?a) :: Containerof(?a):
+  cond
+  | pred(s): bin(f(s))
+
+fun parse_int2(s :: Syntax):
+  parse(s, syntax_is_integer, syntax_to_integer)
+
+fun parse_str2(s :: Syntax):
+  parse(s, syntax_is_string, syntax_to_string)
+

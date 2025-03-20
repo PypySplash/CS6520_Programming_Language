@@ -50,7 +50,7 @@ fun to_the_3rd_help(x, n):
       to_the_3rd(x) * (to_the_3rd_help(x, n - 1))
 
 fun to_the_42nd(x):
-  to_the_3rd_help(x, 14)
+  to_the_3rd_help(x, 42 / 3)
 
 // to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x) * to_the_3rd(x)
 

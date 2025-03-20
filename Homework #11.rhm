@@ -1,0 +1,626 @@
+#lang shplait
+
+type Value
+| intV(n :: Int)
+| closV(arg :: Symbol,
+        body :: Exp,
+        env :: Env)
+| listV(elems :: Listof(Value))
+
+type Exp
+| intE(n :: Int)
+| idE(s :: Symbol)
+| plusE(l :: Exp,
+        r :: Exp)
+| multE(l :: Exp,
+        r :: Exp)
+| funE(n :: Symbol,
+       arg_type :: Type,
+       body :: Exp)
+| appE(fn :: Exp,
+       arg :: Exp)
+| emptyE()
+| consE(l :: Exp,
+        r :: Exp)
+| firstE(arg :: Exp)
+| restE(arg :: Exp)
+
+| ifE(condition :: Exp,
+      then :: Exp,
+      else :: Exp)
+
+type Type
+| intT()
+| boolT()
+| arrowT(arg :: Type,
+         result :: Type)
+| varT(is :: Boxof(Optionof(Type)))
+| listofT(elem :: Type)
+
+type Binding
+| bind(name :: Symbol,
+       val :: Value)
+
+type Env = Listof(Binding)
+
+type TypeBinding
+| tbind(name :: Symbol,
+        ty :: Type)
+
+type TypeEnv = Listof(TypeBinding)
+
+def mt_env = []
+def extend_env = cons
+
+// parse ----------------------------------------
+fun parse(s :: Syntax) :: Exp:
+  cond
+  | syntax_is_integer(s):
+      intE(syntax_to_integer(s))
+  | syntax_is_symbol(s):
+      idE(syntax_to_symbol(s))
+  | ~else:
+      match s
+      | '[]':
+          emptyE()
+
+      | 'if $condition == 0 | $then | $else':
+          ifE(parse(condition),
+              parse(then),
+              parse(else))
+      | 'let $name :: $ty = $rhs:
+           $body':
+          appE(funE(syntax_to_symbol(name),
+                    parse_type(ty),
+                    parse(body)),
+               parse(rhs))
+      | '$left + $right':
+          plusE(parse(left),
+                parse(right))
+      | '$left * $right':
+          multE(parse(left),
+                parse(right))
+      | 'fun ($id :: $ty): $body':
+          funE(syntax_to_symbol(id),
+               parse_type(ty),
+               parse(body))
+      | 'cons($left, $right)':
+          consE(parse(left), parse(right))
+      | 'first($arg)':
+          firstE(parse(arg))
+      | 'rest($arg)':
+          restE(parse(arg))
+      | '$fn($arg)':
+          appE(parse(fn),
+               parse(arg))
+      | '($e)':
+          parse(e)
+      | ~else:
+          error(#'parse, "invalid input: " +& s)
+
+fun parse_type(s :: Syntax) :: Type:
+  match s
+  | '?': varT(box(none()))   
+  | 'Int': intT()
+  | 'Boolean': boolT()
+  | '$arg1 -> $arg2 -> $result':
+      // make `->` right-associative
+      parse_type('$arg1 -> ($arg2 -> $result)')
+  | '$arg -> $result':
+      arrowT(parse_type(arg), parse_type(result))
+  | 'Listof($elem)':
+      listofT(parse_type(elem))
+  | '($ty)': parse_type(ty)
+  | ~else: error(#'parse_type, "invalid input: " +& s)
+
+module test:
+  check: parse('2')
+         ~is intE(2)
+  check: parse('x')
+         ~is idE(#'x)
+  check: parse('2 + 1')
+         ~is plusE(intE(2), intE (1))
+  check: parse('3 * 4')
+         ~is multE(intE(3), intE(4))
+  check: parse('3 * 4 + 8')
+         ~is plusE(multE(intE(3), intE(4)),
+                   intE(8))
+  check: parse('fun (x :: Int): 9')
+         ~is funE(#'x, intT(), intE(9))
+  check: parse('double(9)')
+         ~is appE(idE(#'double), intE(9))
+  check: parse('1 + double(9)')
+         ~is plusE(intE(1),
+                   appE(idE(#'double), intE(9)))
+  check: parse('3 * (4 + 8)')
+         ~is multE(intE(3),
+                   plusE(intE(4), intE(8)))
+  check: parse('let x :: Int = 1 + 2:
+                  y')
+         ~is appE(funE(#'x,
+                       intT(),
+                       idE(#'y)),
+                  plusE(intE(1), intE(2)))
+  check: parse('[]')
+         ~is emptyE()
+  check: parse('cons([], [])')
+         ~is consE(emptyE(), emptyE())
+  check: parse('first([])')
+         ~is firstE(emptyE())
+  check: parse('rest([])')
+         ~is restE(emptyE())
+  check: parse('1 2')
+         ~raises "invalid input"
+
+  check: parse_type('Int')
+         ~is intT()
+  check: parse_type('Boolean')
+         ~is boolT()
+  check: parse_type('Int -> Boolean')
+         ~is arrowT(intT(), boolT())
+  check: parse_type('Int -> (Boolean -> Int)')
+         ~is arrowT(intT(), arrowT(boolT(), intT()))
+  check: parse_type('Int -> Boolean -> Int')
+         ~is arrowT(intT(), arrowT(boolT(), intT()))
+  check: parse_type('?')
+         ~is varT(box(none()))
+  check: parse_type('Listof(Int)')
+         ~is listofT(intT())
+
+  check: parse_type('1')
+         ~raises "invalid input"
+
+// interp ----------------------------------------
+fun interp(a :: Exp, env :: Env) :: Value:
+  match a
+  | intE(n): intV(n)
+  | idE(s): lookup(s, env)
+  | plusE(l, r): num_plus(interp(l, env), interp(r, env))
+  | multE(l, r): num_mult(interp(l, env), interp(r, env))
+  | funE(n, arg_type, body): closV(n, body, env)
+  | appE(fn, arg):
+      match interp(fn, env)
+      | closV(n, body, c_env):
+          interp(body,
+                 extend_env(bind(n, interp(arg, env)),
+                            c_env))
+      | ~else: error(#'interp, "not a function")
+  | emptyE(): listV([])
+  | consE(left, right):
+      def v_l = interp(left, env)
+      def v_r = interp(right, env)
+      match v_r
+      | listV(elems): listV(cons(v_l, elems))
+      | ~else: error(#'interp, "not a list")
+  | firstE(arg):
+      match interp(arg, env)
+      | listV(elems):
+          match elems
+          | []: error(#'interp , "list is empty")
+          | cons(f, r): f
+      | ~else: error(#'interp, "not a list")
+  | restE(arg):
+      match interp(arg, env)
+      | listV(elems):
+          match elems
+          | []: error(#'interp , "list is empty")
+          | cons(f, r): listV(r)
+      | ~else: error(#'interp, "not a list")
+
+  | ifE(condition, then, else):
+      match interp(condition, env)
+      | intV(n): if n == 0
+                 | interp(then, env)
+                 | interp(else, env)
+      | ~else: error(#'interp, "condition not a number")
+
+module test:
+  check: interp(parse('if (fun (x :: Int): x) == 0 | 1 | 2'), mt_env)
+         ~raises "condition not a number"
+
+  check: interp(parse('2'), mt_env)
+         ~is intV(2)
+  check: interp(parse('x'), mt_env)
+         ~raises "free variable"
+  check: interp(parse('x'),
+                extend_env(bind(#'x, intV(9)), mt_env))
+         ~is intV(9)
+  check: interp(parse('2 + 1'), mt_env)
+         ~is intV(3)
+  check: interp(parse('2 * 1'), mt_env)
+         ~is intV(2)
+  check: interp(parse('(2 * 3) + (5 + 8)'), mt_env)
+         ~is intV(19)
+  check: interp(parse('fun (x :: Int):
+                         x + x'),
+                mt_env)
+         ~is closV(#'x, plusE(idE(#'x), idE(#'x)), mt_env)
+  check: interp(parse('let x :: Int = 5: x + x'),
+                mt_env)
+         ~is intV(10)
+  check: interp(parse('let x :: Int = 5:
+                         let x :: Int = x + 1:
+                           x + x'),
+                mt_env)
+         ~is intV(12)
+  check: interp(parse('let x :: Int = 5:
+                         let y :: Int = 6:
+                           x'),
+                mt_env)
+         ~is intV(5)
+  check: interp(parse('(fun (x :: Int): x + x)(8)'),
+                mt_env)
+         ~is intV(16)
+  check: interp(parse('[]'), mt_env)
+         ~is listV([])
+  check: interp(parse('cons(1, [])'), mt_env)
+         ~is listV([intV(1)])
+  check: interp(parse('first(cons(1, []))'), mt_env)
+         ~is intV(1)
+  check: interp(parse('rest(cons(1, []))'), mt_env)
+         ~is listV([])
+  check: interp(parse('cons(1, 2)'), mt_env)
+         ~raises "not a list"
+  check: interp(parse('first(1)'), mt_env)
+         ~raises "not a list"
+  check: interp(parse('rest(2)'), mt_env)
+         ~raises "not a list"
+  check: interp(parse('first([])'), mt_env)
+         ~raises "list is empty"
+  check: interp(parse('rest([])'), mt_env)
+         ~raises "list is empty"
+  check: interp(parse('1(2)'), mt_env)
+         ~raises "not a function"
+  check: interp(parse('1 + (fun (x :: Int): x)'), mt_env)
+         ~raises "not a number"
+  check: interp(parse('let bad :: Int -> Int = (fun (x :: Int):
+                                                        x + y):
+                         let y :: Int = 5:
+                           bad(2)'),
+                mt_env)
+         ~raises "free variable"
+               
+// num_plus and num_mult ----------------------------------------
+fun num_op(op :: (Int, Int) -> Int, l :: Value, r :: Value) :: Value:
+  cond
+  | l is_a intV && r is_a intV:
+      intV(op(intV.n(l), intV.n(r)))
+  | ~else:
+      error(#'interp, "not a number")
+fun num_plus(l :: Value, r :: Value) :: Value:
+  num_op(fun (a, b): a+b, l, r)
+fun num_mult(l :: Value, r :: Value) :: Value:
+  num_op(fun (a, b): a*b, l, r)
+
+module test:
+  check: num_plus(intV(1), intV(2))
+         ~is intV(3)
+  check: num_mult(intV(3), intV(2))
+         ~is intV(6)
+  
+// lookup ----------------------------------------
+fun make_lookup(get_name :: ?a -> Symbol, get_val :: ?a -> ?b):
+  fun (n :: Symbol, env :: Listof(?a)) :: ?b:
+    match env
+    | []: error(#'lookup, "free variable")
+    | cons(b, rst_env):
+        cond
+        | n == get_name(b):
+            get_val(b)
+        | ~else:
+            make_lookup(get_name, get_val)(n, rst_env)
+
+def lookup = make_lookup(bind.name, bind.val)
+
+module test:
+  check: lookup(#'x, mt_env)
+         ~raises "free variable"
+  check: lookup(#'x, extend_env(bind(#'x, intV(8)), mt_env))
+         ~is intV(8)
+  check: lookup(#'x, extend_env(bind(#'x, intV(9)),
+                                extend_env(bind(#'x, intV(8)),
+                                           mt_env)))
+         ~is intV(9)
+  check: lookup(#'y, extend_env(bind(#'x, intV(9)),
+                                extend_env(bind(#'y, intV(8)),
+                                           mt_env)))
+         ~is intV(8)
+
+
+// typecheck ----------------------------------------
+fun typecheck(a :: Exp, tenv :: TypeEnv) :: Type:
+  match a
+  | intE(n): intT()
+  | idE(n): type_lookup(n, tenv)
+  | plusE(l, r): typecheck_nums(l, r, tenv)
+  | multE(l, r): typecheck_nums(l, r, tenv)
+  | funE(n, arg_type, body):
+      arrowT(arg_type,
+             typecheck(body,
+                       extend_env(tbind(n, arg_type),
+                                  tenv)))
+  | appE(fn, arg):
+      def result_type = varT(box(none()))
+      unify(arrowT(typecheck(arg, tenv),
+                   result_type),
+            typecheck(fn, tenv),
+            fn)
+      result_type
+  | emptyE(): listofT(varT(box(none())))
+  | consE(left, right):
+      def elem_type = typecheck(left, tenv)
+      def list_type = typecheck(right, tenv)
+      unify(listofT(elem_type), list_type, right)
+      list_type
+  | firstE(arg):
+      def elem_type = varT(box(none()))
+      unify(listofT(elem_type),
+            typecheck(arg, tenv),
+            arg)
+      elem_type
+  | restE(arg):
+      def list_type = listofT(varT(box(none())))
+      unify(list_type,
+            typecheck(arg, tenv),
+            arg)
+      list_type
+
+  | ifE(condition, then, else):
+      unify(typecheck(condition, tenv), intT(), condition)
+      def then_type = typecheck(then, tenv)
+      def else_type = typecheck(else, tenv)
+      unify(then_type, else_type, else)
+      then_type
+
+fun typecheck_nums(l, r, tenv):
+  unify(typecheck(l, tenv), intT(), l)
+  unify(typecheck(r, tenv), intT(), r)
+  intT()
+
+def type_lookup: make_lookup(tbind.name, tbind.ty)
+
+module test:
+  check: typecheck(parse('10'), mt_env)
+         ~is intT()
+  check: typecheck(parse('10 + 17'), mt_env)
+         ~is intT()
+  check: typecheck(parse('10 * 17'), mt_env)
+         ~is intT()
+  check: typecheck(parse('fun (x :: Int): 12'), mt_env)
+         ~is arrowT(intT(), intT())
+  check: typecheck(parse('fun (x :: Int): fun (y :: Boolean): x'),
+                   mt_env)
+         ~is arrowT(intT(), arrowT(boolT(), intT()))
+
+  check: resolve(typecheck(parse('(fun (x :: Int): 12)(1 + 17)'),
+                           mt_env))
+         ~is intT()
+
+  check: resolve(typecheck(parse('let x :: Int = 4:
+                                    let f :: (Int -> Int) = (fun (y :: Int):
+                                                                     x + y):
+                                      f(x)'),
+                           mt_env))
+         ~is intT()
+
+  check: typecheck(parse('1(2)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('(fun (x :: Boolean): x)(2)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('1 + (fun (x :: Int): x)'),
+                   mt_env)
+         ~raises "no type"
+  check: typecheck(parse('(fun (x :: Int): x) * 1'),
+                   mt_env)
+         ~raises "no type"
+
+// unify ----------------------------------------
+fun unify(t1 :: Type, t2 :: Type, exp :: Exp):
+  match t1
+  | varT(is1):
+      match unbox(is1)
+      | some(t3): unify(t3, t2, exp)
+      | none():
+          let t3 = resolve(t2):
+            if t1 === t3
+            | #void
+            | if occurs(t1, t3)
+              | type_error(exp, t1, t3)
+              | set_box(is1, some(t3))
+  | ~else:
+      match t2
+      | varT(is2): unify(t2, t1, exp)
+      | intT(): match t1
+                | intT(): #void
+                | ~else: type_error(exp, t1, t2)
+      | boolT(): match t1
+                 | boolT(): #void
+                 | ~else: type_error(exp, t1, t2)
+      | arrowT(a2, b2): match t1
+                        | arrowT(a1, b1):
+                            unify(a1, a2, exp)
+                            unify(b1, b2, exp)
+                        | ~else: type_error(exp, t1, t2)
+      | listofT(e2): match t1
+                     | listofT(e1):
+                         unify(e1, e2, exp)
+                     | ~else: type_error(exp, t1, t2)
+
+fun resolve(t :: Type) :: Type:
+  match t
+  | varT(is):
+      match unbox(is)
+      | none(): t
+      | some(t2): resolve(t2)
+  | ~else: t
+
+fun occurs(r :: Type, t :: Type) :: Boolean:
+  match t
+  | intT(): #false
+  | boolT(): #false
+  | arrowT(a, b): occurs(r, a) || occurs(r, b)
+  | varT(is):
+      // `===` checks for the same box
+      (r === t) || (match unbox(is)
+                    | none(): #false
+                    | some(t2): occurs(r, t2))
+  | listofT(e): occurs(r, e)
+
+fun type_error(a :: Exp, t1 :: Type, t2 :: Type):
+  error(#'typecheck, "no type: "
+                       +& a
+                       +& " type " +& t1
+                       +& " vs. " +& t2)
+
+// Implement run_prog
+fun run_prog(s :: Syntax) :: Syntax:
+  def exp = parse(s)
+  block:
+    def ttype = typecheck(exp, mt_env)  // If typecheck fails, it will raise an error
+    match interp(exp, mt_env)
+    | intV(n): integer_to_syntax(n)
+    | closV(name, body, env): 'function'
+    | listV(elems): 'list'
+
+
+module test:
+  def a_type_var = varT(box(none()))
+  def an_exp = intE(0)
+  
+  check: unify(intT(), intT(), an_exp)
+         ~is #void
+  check: unify(boolT(), boolT(), an_exp)
+         ~is #void
+  check: unify(arrowT(intT(), boolT()), arrowT(intT(), boolT()), an_exp)
+         ~is #void
+  check: unify(varT(box(some(boolT()))), boolT(), an_exp)
+         ~is #void
+  check: unify(boolT(), varT(box(some(boolT()))), an_exp)
+         ~is #void
+  check: unify(a_type_var, a_type_var, an_exp)
+         ~is #void
+  check: unify(a_type_var, varT(box(some(a_type_var))), an_exp)
+         ~is #void
+  
+  check: block:
+           def t = varT(box(none()))
+           unify(t, boolT(), an_exp)
+           unify(t, boolT(), an_exp)
+         ~is #void
+
+  check: unify(intT(), boolT(), an_exp)
+         ~raises "no type"
+  check: unify(intT(), arrowT(intT(), boolT()), an_exp)
+         ~raises "no type"
+  check: unify(arrowT(intT(), intT()), arrowT(intT(), boolT()), an_exp)
+         ~raises "no type"
+  check: block:
+           def t = varT(box(none()))
+           unify(t, boolT(), an_exp)
+           unify(t, intT(), an_exp)
+         ~raises "no type"
+  check: unify(a_type_var, arrowT(a_type_var, boolT()), an_exp)
+         ~raises "no type"
+  check: unify(a_type_var, arrowT(boolT(), a_type_var), an_exp)
+         ~raises "no type"
+  
+  check: resolve(a_type_var)
+         ~is a_type_var
+  check: resolve(varT(box(some(intT()))))
+         ~is intT()
+
+  check: occurs(a_type_var, a_type_var)
+         ~is #true
+  check: occurs(a_type_var, varT(box(none())))
+         ~is #false
+  check: occurs(a_type_var, varT(box(some(a_type_var))))
+         ~is #true
+  check: occurs(a_type_var, intT())
+         ~is #false
+  check: occurs(a_type_var, boolT())
+         ~is #false
+  check: occurs(a_type_var, arrowT(a_type_var, intT()))
+         ~is #true
+  check: occurs(a_type_var, arrowT(intT(), a_type_var))
+         ~is #true
+
+// Homework #11 PART 1
+  check: run_prog('if 0 == 0 | 1 | 2')
+         ~is '1'
+  
+  check: run_prog('if 3 == 0 | 1 | 2')
+         ~is '2'
+  
+  check: run_prog('if 2 == 0 | (fun (x :: ?): x) | (fun (x :: ?): 1 + x)')
+         ~is 'function'
+  
+  check: run_prog('if (fun (x :: ?): x) == 0 | 1 | 2')
+         ~raises "no type"
+  
+  check: run_prog('if 0 == 0 | (fun (x :: ?): x) | 2')
+         ~raises "no type"
+  
+  check: run_prog('let f :: ? = (fun (x :: ?):
+                                   fun (y :: ?):
+                                     fun (z :: ?):
+                                       if x == 0 | y | z):
+                     f(1)(2)(3)')
+         ~is '3'
+  
+  check: run_prog('let f :: ? = (fun (x :: ?):
+                                   fun (y :: ?):
+                                     fun (z :: ?):
+                                       if x == 0
+                                       | y
+                                       | fun (x :: ?): z):
+                     f(1)(fun (x :: Int): 2)(3)(4)')
+         ~is '3'
+  
+  check: run_prog('let f :: ? = (fun (x :: ?):
+                                   if x == 0 | x | x(1)):
+                     f(1)')
+         ~raises "no type"
+// PART 2
+  check: run_prog('[]')
+         ~is 'list'
+  
+  check: run_prog('cons(1, [])')
+         ~is 'list'
+  check: run_prog('cons([], [])')
+         ~is 'list'
+  check: run_prog('cons(1, cons([], []))')
+         ~raises "no type"
+  
+  check: run_prog('first(1)')
+         ~raises  "no type"
+  check: run_prog('rest(1)')
+         ~raises  "no type"
+  
+  check: run_prog('first([])')
+         ~raises  "list is empty"
+  check: run_prog('rest([])')
+         ~raises  "list is empty"
+  
+  check: run_prog('let f :: ? = (fun (x :: ?):
+                                   first(x)):
+                     f(cons(1, [])) + 3')
+         ~is '4'
+  check: run_prog('let f :: ? = (fun (x :: ?):
+                                   rest(x)):
+                     first(f(cons(1, cons(2, [])))) + 3')
+         ~is '5'
+  check: run_prog('let f :: ? = (fun (x :: ?):
+                                   fun (y :: ?):
+                                     cons(x, y)):
+                     first(rest(f(1)(cons(2, []))))')
+         ~is '2'
+  
+  check: run_prog('fun (x :: ?):
+                     cons(x, x)')
+         ~raises "no type"
+  
+  check: run_prog('let f :: ? = (fun (x :: ?): x):
+                     cons(f(1), f([]))')
+         ~raises "no type"
